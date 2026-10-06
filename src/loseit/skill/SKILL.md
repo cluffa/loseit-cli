@@ -15,16 +15,16 @@ Log everything the user mentioned in **one** call. Put the meal, amount and any 
 
 ```bash
 loseit log --date yesterday \
-  "dinner: 12 oz spam lite" \
-  "dinner: 4 slices sara lee delightful wheat" \
-  "dinner: 2 kraft singles" \
-  "dinner: 2 tbsp chick fil a honey mustard" \
-  "snacks: 1 can mike's hard lemonade ~95cal"
+  "dinner: 6 oz chicken breast" \
+  "dinner: 2 slices whole wheat bread" \
+  "dinner: 1 slice cheddar cheese" \
+  "dinner: 2 tbsp ranch dressing" \
+  "snacks: 1 can cola ~140cal"
 ```
 
-- **Calorie hint:** `~95cal` (also `(95 cal)`, `@95kcal`, or `95 calories` at the end). The user's recent foods and the top search hits are all candidates, and the one closest to the hint for that amount wins. Whenever the user says how many calories something has, pass it. It's the best protection against regular vs. light vs. zero-sugar mix-ups and bad database entries.
+- **Calorie hint:** `~95cal` (also `(95 cal)`, `@95kcal`, or `95 calories` at the end). The user's recent foods and the top search hits are all candidates, and the one closest to the hint for that amount wins. Whenever the user says how many calories something has, pass it. It's the best protection against regular vs. light vs. zero-sugar mix-ups (a regular cola is ~140 cal, a diet one ~0) and bad database entries.
 - **No amount:** a recent food is logged at the amount the user used last time.
-- **Count units** (`can`, `bottle`, `each`, `slice`): these map onto the best match's own unit ("1 Serving"), with a note. They never pull in a different product. If nothing comes in that unit, the error lists the matches and their units; retry with a weight (`12 oz spam lite`) or a calorie hint.
+- **Count units** (`can`, `bottle`, `each`, `slice`): these map onto the best match's own unit ("1 Serving"), with a note. They never pull in a different product. If nothing comes in that unit, the error lists the matches and their units; retry with a weight (`5 oz tuna`) or a calorie hint.
 - **Meal:** if no meal is given, today's items are placed by time of day, and other days use the food's usual meal. After midnight, "dinner" usually means yesterday, so pass `--date yesterday`.
 - **Preview:** `--dry-run` shows what would be logged without writing anything.
 
@@ -41,22 +41,22 @@ Reply briefly: what was logged, with calories, then the day's total versus the b
 
 ## Fixing entries
 
-ENTRY is the food's name (`"honey mustard"`) or an entry id prefix. Add `--date` for days other than today.
+ENTRY is the food's name (`"ranch dressing"`) or an entry id prefix. Add `--date` for days other than today.
 
 ```bash
-loseit edit "honey mustard" --amount 2 --date yesterday              # same unit as logged
-loseit edit bread --food "sara lee delightful wheat" --date yesterday  # swap food, keep meal + amount
-loseit edit bread --food 6bf52938 --date yesterday                   # swap to an alternative's id
+loseit edit "ranch dressing" --amount 1 --date yesterday             # same unit as logged
+loseit edit bread --food "sourdough bread" --date yesterday          # swap food, keep meal + amount
+loseit edit bread --food 1a2b3c4d --date yesterday                   # swap to an alternative's id
 loseit edit coffee --meal breakfast        # or --move-to today
-loseit delete "spam" --date yesterday      # or --all [--meal dinner]
+loseit delete cookies --date yesterday     # or --all [--meal dinner]
 loseit copy --from yesterday --meal breakfast   # repeat a meal today
 ```
 
 ## Looking things up
 
 - `loseit status [--date D]` shows the day's totals; `loseit summary [--date D]` adds the entries with their ids.
-- `loseit search "mike's zero sugar"` returns results with a default `serving` and `calories`.
-- `loseit recent spam` lists the user's own foods, with the last amount and calories.
+- `loseit search "greek yogurt"` returns results with a default `serving` and `calories`.
+- `loseit recent chicken` lists the user's own foods, with the last amount and calories.
 - `loseit food <id>` shows every serving size and the full nutrients.
 - `loseit weight [--days N]` lists weigh-ins.
 - Ids from `recent` or `search` output work as 8-character prefixes everywhere.

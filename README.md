@@ -3,12 +3,12 @@
 A command-line client for [Lose It!](https://www.loseit.com) that's built for AI assistants. You tell your assistant what you ate, and it logs it in one command:
 
 ```bash
-$ loseit log --date yesterday "dinner: 12 oz spam lite" "dinner: 2 kraft singles" "1 can mike's hard lemonade ~95cal"
-✓ 12 Ounce Spam Lite — 660 cal → dinner (5c1e…)
-✓ 2 Slice Cheese, American, Slice — 120 cal → dinner (8a02…)
-✓ 1 Serving Mikes Hard Lemonade Zero Sugar — 94 cal → snacks (8e4e…)
-  note: no 'can' unit for this food; used Serving
-  2026-10-05: 874 / 1800 cal, 926 left
+$ loseit log "dinner: 6 oz grilled salmon" "dinner: 1 cup brown rice" "snacks: 1 can cola ~140cal"
+✓ 6 Ounce Salmon, grilled — 300 cal → dinner (5c1e…)
+✓ 1 Cup Brown Rice, Cooked — 216 cal → dinner (8a02…)
+✓ 1 Can Soda, Coke — 140 cal → snacks (8e4e…)
+  other matches: Soda, Diet Coke 0 cal (05d160ee); Soda, Coke Zero 0 cal (b27c44be); …
+  2026-10-05: 656 / 1800 cal, 1144 left
 ```
 
 It can log, edit, swap, move, copy and delete foods; show a day's budget, burn target, deficit and macros; search the food database (results include calories); and list weigh-ins. When piped, output is JSON with structured errors and exit codes.
@@ -61,10 +61,10 @@ For an agent on another machine (headless), run `loseit login --export` where yo
 loseit status [--date yesterday]                 # budget, eaten, remaining, burn target, deficit, macros
 loseit summary [--date D]                        # entries (with ids) + totals
 loseit log "lunch: 150g chicken breast" "2 eggs" "bagel"     # no amount = your usual amount
-loseit log "1 can mike's hard lemonade ~95cal"   # calorie hint picks the closest match
-loseit edit "honey mustard" --amount 2 --date yesterday
-loseit edit bread --food "sara lee delightful wheat" --date yesterday   # swap food, keep meal/amount
-loseit delete spam --date yesterday              # or --all [--meal dinner]
+loseit log "1 can cola ~140cal"                   # calorie hint picks the closest match
+loseit edit "peanut butter" --amount 2 --date yesterday
+loseit edit bread --food "whole wheat bread" --date yesterday   # swap food, keep meal/amount
+loseit delete cookies --date yesterday           # or --all [--meal dinner]
 loseit copy --from yesterday --meal breakfast    # repeat a meal today
 loseit recent [QUERY] / search QUERY / food ID / weight [--days N]
 ```

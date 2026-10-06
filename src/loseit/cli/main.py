@@ -30,7 +30,7 @@ Quick reference (JSON output when piped; dates: today|yesterday|tomorrow|±N|YYY
   loseit log "ITEM" ["ITEM"...] [--date D]   log foods; returns entries + day totals
       ITEM = "[meal:] [amount][unit] food [~CAL cal]", e.g. "lunch: 150g chicken breast",
       "2 eggs", "bagel" (no amount = what you logged last time), a food id (prefix ok),
-      or "1 can mike's hard lemonade ~95cal" (picks the match closest to 95 cal)
+      or "1 can cola ~140cal" (picks the match closest to 140 cal)
   loseit edit ENTRY [--amount N --unit U | --servings N] [--meal M] [--move-to D]
                     [--food "FOOD"]        --food swaps the food, keeping meal and amount
   loseit delete ENTRY... | --all [--meal M]   [--date D]
@@ -439,7 +439,7 @@ def log(items: tuple[str, ...], meal: str | None, target_date: str | None, amoun
       loseit log "2 eggs" "coffee" --meal breakfast
       loseit log "lunch: 150g chicken breast" "dinner: 1 cup rice"
       loseit log 1bc020d4 --amount 150 --unit g
-      loseit log "1 can mike's hard lemonade ~95cal" --date yesterday
+      loseit log "1 can cola ~140cal" --date yesterday
     """
     from loseit.client.api import LoseItAPI
     from loseit.client.parse import parse_item
@@ -484,7 +484,7 @@ def log(items: tuple[str, ...], meal: str | None, target_date: str | None, amoun
 @click.option("--meal", type=MEAL_CHOICE, default=None, help="Move to another meal")
 @click.option("--move-to", default=None, shell_complete=complete_date, help="Move to another day")
 @click.option("--food", default=None, shell_complete=complete_food,
-              help='Swap in another food: id (prefix ok) or text like "sara lee delightful bread"')
+              help='Swap in another food: id (prefix ok) or text like "whole wheat bread"')
 @json_option
 @cli_error_handler
 def edit(entry: str, target_date: str | None, amount: float | None, unit: str | None,
@@ -494,8 +494,8 @@ def edit(entry: str, target_date: str | None, amount: float | None, unit: str | 
 
     \b
     ENTRY is an entry id (prefix ok) or the food's name, e.g. "bagel".
-      loseit edit "honey mustard" --amount 2 --date yesterday
-      loseit edit bread --food "sara lee delightful wheat" --date yesterday
+      loseit edit "peanut butter" --amount 2 --date yesterday
+      loseit edit bread --food "whole wheat bread" --date yesterday
     """
     from loseit.client.api import LoseItAPI
 
