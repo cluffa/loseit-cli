@@ -40,6 +40,7 @@ Quick reference (JSON output when piped; dates: today|yesterday|tomorrow|±N|YYY
   loseit food ID                        a food's serving sizes and nutrition
   loseit weight [--days N]              weigh-ins
   loseit skill [install]                agent skill (SKILL.md) for AI assistants
+  loseit completion [zsh|bash|fish]     tab completion: eval "$(loseit completion zsh)"
 Foods resolve from your recent foods first, then search. Ids from recent or
 search output work as 8-char prefixes. Count units (can, bottle, slice, each)
 fall back to the food's own serving unit; results carry "notes" when that or a
@@ -113,8 +114,65 @@ def json_option(f):
                         help="JSON output (default when stdout is not a terminal)")(f)
 
 
+# ──────────────────────────────────────────────
+# Shell completion (offline: reads the local recent-foods index only)
+# ──────────────────────────────────────────────
+
+def _recent_data() -> dict:
+    try:
+        from loseit.client.recent import RecentFoods
+        return RecentFoods.load().data
+    except Exception:
+        return {"foods": {}}
+
+
+def _matching(values, incomplete: str):
+    from click.shell_completion import CompletionItem
+    inc = incomplete.lower()
+    seen, out = set(), []
+    for value, help_text in values:
+        if value.lower() not in seen and (value.lower().startswith(inc) or (inc and inc in value.lower())):
+            seen.add(value.lower())
+            out.append(CompletionItem(value, help=help_text))
+    return out
+
+
+def complete_food(ctx, param, incomplete):
+    """Recent food names, most recently eaten first."""
+    foods = _recent_data().get("foods", {}).values()
+    ranked = sorted(foods, key=lambda f: max((e["date"] for e in f["entries"].values()), default=""),
+                    reverse=True)
+    values = []
+    for f in ranked:
+        last = max(f["entries"].values(), key=lambda e: e["date"])
+        values.append((f["name"].strip(), f"{last['amount']:g} {last['unit']}, {last['calories']:g} cal"))
+    return _matching(values, incomplete)
+
+
+def complete_entry(ctx, param, incomplete):
+    """Food names logged on --date (from the local index, as of the last fetch)."""
+    try:
+        day = _date(ctx.params.get("target_date")).isoformat()
+    except ValueError:
+        return []
+    values = []
+    for f in _recent_data().get("foods", {}).values():
+        for e in f["entries"].values():
+            if e["date"] == day:
+                values.append((f["name"].strip(), f"{e['meal']}, {e['amount']:g} {e['unit']}"))
+    return _matching(values, incomplete)
+
+
+def complete_date(ctx, param, incomplete):
+    from datetime import date, timedelta
+    today = date.today()
+    values = [("today", ""), ("yesterday", ""), ("tomorrow", "")]
+    values += [((today - timedelta(days=n)).isoformat(), "") for n in range(2, 8)]
+    return _matching(values, incomplete)
+
+
 def date_option(f):
-    return click.option("--date", "target_date", default=None,
+    return click.option("--date", "target_date", default=None, shell_complete=complete_date,
                         help="today, yesterday, tomorrow, ±N or YYYY-MM-DD [default: today]")(f)
 
 
@@ -185,6 +243,25 @@ def login(browser: str | None, do_export: bool, import_blob: str | None):
             auth.login_with_window()
     except RuntimeError as e:
         fail(str(e), EXIT_AUTH, "auth")
+
+
+@main.command()
+@click.argument("shell", type=click.Choice(["zsh", "bash", "fish"]), default="zsh")
+def completion(shell: str):
+    """Print the shell completion script. Add to your shell config:
+
+    \b
+      zsh:  eval "$(loseit completion zsh)"      (~/.zshrc)
+      bash: eval "$(loseit completion bash)"     (~/.bashrc)
+      fish: loseit completion fish | source      (~/.config/fish/config.fish)
+    """
+    from click.shell_completion import get_completion_class
+
+    script = get_completion_class(shell)(main, {}, "loseit", "_LOSEIT_COMPLETE").source()
+    if shell == "zsh":
+        # compdef needs zsh's completion system; load it if .zshrc didn't
+        script = "(( $+functions[compdef] )) || { autoload -Uz compinit && compinit; }\n" + script
+    click.echo(script)
 
 
 # ──────────────────────────────────────────────
@@ -341,7 +418,7 @@ def weight(days: int, as_json: bool):
 # ──────────────────────────────────────────────
 
 @main.command()
-@click.argument("items", nargs=-1, required=True)
+@click.argument("items", nargs=-1, required=True, shell_complete=complete_food)
 @click.option("--meal", type=MEAL_CHOICE, default=None,
               help="Meal for items without a 'meal:' prefix [default: by time of day; "
                    "other days: the food's usual meal]")
@@ -399,14 +476,14 @@ def log(items: tuple[str, ...], meal: str | None, target_date: str | None, amoun
 
 
 @main.command()
-@click.argument("entry")
+@click.argument("entry", shell_complete=complete_entry)
 @date_option
 @click.option("--amount", type=float, default=None, help="New amount (in --unit, or the logged unit)")
 @click.option("--unit", default=None, help="New unit")
 @click.option("--servings", type=float, default=None, help="New number of default servings")
 @click.option("--meal", type=MEAL_CHOICE, default=None, help="Move to another meal")
-@click.option("--move-to", default=None, help="Move to another day")
-@click.option("--food", default=None,
+@click.option("--move-to", default=None, shell_complete=complete_date, help="Move to another day")
+@click.option("--food", default=None, shell_complete=complete_food,
               help='Swap in another food: id (prefix ok) or text like "sara lee delightful bread"')
 @json_option
 @cli_error_handler
@@ -441,7 +518,7 @@ def edit(entry: str, target_date: str | None, amount: float | None, unit: str | 
 
 
 @main.command()
-@click.argument("entries", nargs=-1)
+@click.argument("entries", nargs=-1, shell_complete=complete_entry)
 @date_option
 @click.option("--all", "all_entries", is_flag=True, help="Delete every food entry on the day")
 @click.option("--meal", type=MEAL_CHOICE, default=None, help="Only entries in this meal")
@@ -466,7 +543,7 @@ def delete(entries: tuple[str, ...], target_date: str | None, all_entries: bool,
 
 
 @main.command()
-@click.option("--from", "from_date", required=True, help="Day to copy from (e.g. yesterday)")
+@click.option("--from", "from_date", required=True, shell_complete=complete_date, help="Day to copy from (e.g. yesterday)")
 @click.option("--meal", type=MEAL_CHOICE, default=None, help="Only this meal [default: whole day]")
 @date_option
 @click.option("--to-meal", type=MEAL_CHOICE, default=None, help="Put the copies in this meal")

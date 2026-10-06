@@ -13,7 +13,7 @@ cd loseit-cli && uv venv && uv pip install -e . pytest
 .venv/bin/loseit login            # pop-up Chrome window; log in; session saved
 .venv/bin/loseit log "lunch: 150g chicken breast" "2 eggs"
 .venv/bin/loseit summary --date yesterday
-.venv/bin/pytest tests/ -q        # 233 passed
+.venv/bin/pytest tests/ -q        # 240 passed
 ```
 
 ## Commands (agent-first)
@@ -29,6 +29,7 @@ cd loseit-cli && uv venv && uv pip install -e . pytest
 | `status`, `summary` | day totals (+ entries with ids). |
 | `recent [QUERY]` | the user's foods ranked like the app (match, recency, frequency). |
 | `search`, `food ID`, `weight [--days]` | search DB (each hit has a default `serving` + `calories` via parallel getFood), serving sizes, weigh-ins. |
+| `completion [zsh\|bash\|fish]` | shell completion script (Click); completers in `main.py` read only the local recents index (foods, entries on `--date`, date words). Enable with `eval "$(loseit completion zsh)"` in ~/.zshrc. |
 | `login [--browser X] [--export] [--import S]` | `LOSEIT_SESSION` env var = exported session for headless agents. |
 
 ## Architecture
@@ -43,7 +44,7 @@ cli/main.py ── client/api.py ──┬─ gwt_schema.py  (extract layouts fr
 - **`gwt_schema.py`**: builds `{"types", "methods"}` from the permutation script plus its deferred fragments (`deferredjs/<perm>/1..N.cache.js`). Each type's `instantiate`, `deserialize` and `serialize` function is compiled to ops (`i d l s b o n`, `rep`/`arr` loops) by recognizing the stream primitives by body shape. Service proxies give each method's parameter types, including overloads. `ResponseDecoder` reads `//OK[...]` (including chunked `.concat(...)`) back to front and fails if anything is left unread. `RequestDecoder`/`RequestEncoder` round-trip all 69 recorded requests byte for byte. Cached as `~/.config/loseit/gwt-schema-<perm>.json`; rebuilt automatically after LoseIt redeploys (login re-discovers the permutation and policy hash).
 - **`api.py`**: `call(method, *params)` takes the types from the method table, retries timeouts only for `get*`/`search*`, and maps `//EX` to `LoseItError`. Field positions are documented in docstrings (`summarize_daily_details`, `summarize_food`, `build_serving_size`, `get_weight_history`).
 - **`recent.py`**: `~/.config/loseit/recent-foods.json`. It's fed by every day fetched, and backfilled over 30 days with one range call when older than 6 h. It also remembers the last 500 search hits (`seen`) so their id prefixes resolve.
-- **Resolution (`api.resolve_item`)**: candidates = up to 4 recents (+ 8 search hits when there's no recent fit or a calorie hint). `_estimate_calories` fetches them in parallel and marks whether the unit fits. Choice: closest to the hint, else the top candidate, else the first exact unit fit; otherwise an error listing the matches. A swapped count unit that doesn't match the hint is rejected. Entries over 2000 cal get a "check the amount" note.
+- **Resolution (`api.resolve_item`)**: candidates = up to 4 recents (+ 8 search hits when there's no recent fit or a calorie hint). `_estimate_calories` fetches them in parallel and marks whether the unit fits. Choice: closest to the hint, else the top candidate, else the first exact unit fit; otherwise an error listing the matches. A hint counts as met within 10% (min 10 cal); if no candidate meets it, up to 2 respellings learned from result names (`parse.query_variants`: "carbmaster" ↔ "carb master") are searched too. A swapped count unit that doesn't match the hint is rejected. Entries over 2000 cal get a "check the amount" note.
 
 ## Key protocol facts (verified live)
 
@@ -63,7 +64,7 @@ cli/main.py ── client/api.py ──┬─ gwt_schema.py  (extract layouts fr
 
 ## Tests
 
-`.venv/bin/pytest tests/ -q` → **233 passed**. `tests/conftest.py` isolates every test from the real `~/.config/loseit` and installs the schema fixture (`tests/fixtures/gwt_schema.json`, regenerate from live JS if LoseIt changes types). `test_api.py` runs log/edit/move/delete/copy against a fake server built from HAR fixtures and asserts on the decoded requests.
+`.venv/bin/pytest tests/ -q` → **240 passed**. `tests/conftest.py` isolates every test from the real `~/.config/loseit` and installs the schema fixture (`tests/fixtures/gwt_schema.json`, regenerate from live JS if LoseIt changes types). `test_api.py` runs log/edit/move/delete/copy against a fake server built from HAR fixtures and asserts on the decoded requests.
 
 ## Known gaps / non-goals
 

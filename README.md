@@ -25,7 +25,15 @@ loseit login              # log in through the pop-up Chrome window; the session
 loseit status
 ```
 
-To install from a local checkout: `uv tool install /path/to/loseit-cli`. To upgrade: `uv tool upgrade loseit-cli`, then run `loseit skill install` again.
+**Tab completion** (zsh; `bash`/`fish` work too). Add this to `~/.zshrc`:
+
+```bash
+eval "$(loseit completion zsh)"
+```
+
+It completes commands and options, your recent foods for `log`/`edit --food`, the entries logged on `--date` for `edit`/`delete`, and date words. It reads only the local recents file, so it's instant.
+
+To install from a local checkout (`--editable` to run your working copy): `uv tool install /path/to/loseit-cli`. To upgrade: `uv tool upgrade loseit-cli`, then run `loseit skill install` again.
 
 ## Set up your AI assistant
 

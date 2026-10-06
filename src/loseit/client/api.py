@@ -18,7 +18,7 @@ import httpx
 from .gwt_schema import (
     GEnum, GObject, RequestEncoder, ResponseDecoder, RpcCall, box, load_schema,
 )
-from .parse import Item, default_meal, normalize_words, parse_item
+from .parse import Item, default_meal, normalize_words, parse_item, query_variants
 from .recent import REFRESH_DAYS, RecentFoods, _match_score, rank_search_results
 from .session import SessionStore
 
@@ -454,13 +454,12 @@ class LoseItAPI:
                                    r["last_amount"], r["last_unit"]) else None})
         self._estimate_calories(candidates)
         if not any(c["fits"] for c in candidates) or item.calories is not None:
-            hits = rank_search_results(item.query, self.search_foods(item.query, limit=15, details=False))
-            known = {c["food_id"] for c in candidates}
-            found = [{"food_id": h["food_id"], "source": "search", "name": h["name"],
-                      "brand": h["brand"], "amount": item.amount, "unit": item.unit, "calories": None}
-                     for h in hits[:8] if h["food_id"] not in known]
-            self._estimate_calories(found)
-            candidates += found
+            hits = self._add_search_candidates(item.query, item, candidates)
+            # Hint not met: try other spellings ("carbmaster" -> "carb master")
+            if item.calories is not None and not any(
+                    c["fits"] and _near(c["calories"], item.calories) for c in candidates):
+                for variant in query_variants(item.query, [f"{h['name']} {h['brand']}" for h in hits])[:2]:
+                    self._add_search_candidates(variant, item, candidates)
         if not candidates:
             raise LookupError(f"No foods found for {item.query!r}")
         # Foods that can't take the requested unit ("1 can" of a grams-only food)
@@ -496,6 +495,18 @@ class LoseItAPI:
                 out["warning"] = (f"closest match is {choice['calories']:g} cal, not ~{item.calories:g}"
                                   if choice["calories"] is not None else "couldn't check calories")
         return out
+
+    def _add_search_candidates(self, query: str, item: Item, candidates: list[dict]) -> list[dict]:
+        """Search `query`, add the top 8 new hits (sized for `item`) to
+        `candidates`, and return the raw hits."""
+        hits = rank_search_results(query, self.search_foods(query, limit=15, details=False))
+        known = {c["food_id"] for c in candidates}
+        found = [{"food_id": h["food_id"], "source": "search", "name": h["name"],
+                  "brand": h["brand"], "amount": item.amount, "unit": item.unit, "calories": None}
+                 for h in hits[:8] if h["food_id"] not in known]
+        self._estimate_calories(found)
+        candidates += found
+        return hits
 
     def _estimate_calories(self, candidates: list[dict]) -> None:
         """Fill in calories for the amount/unit each candidate would be logged at,
@@ -844,8 +855,8 @@ def _alt(r: dict) -> dict:
 
 
 def _near(calories: float | None, hint: float) -> bool:
-    """Is `calories` within 25% (or 25 cal) of a calorie hint?"""
-    return calories is not None and abs(calories - hint) <= max(25.0, 0.25 * hint)
+    """Is `calories` within 10% (or 10 cal) of a calorie hint?"""
+    return calories is not None and abs(calories - hint) <= max(10.0, 0.10 * hint)
 
 
 def _size_args(amount: float | None, unit: str | None) -> tuple:

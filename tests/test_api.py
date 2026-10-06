@@ -267,3 +267,23 @@ class TestAgentFlow:
         assert api.resolve_item(parse_item("1 can carrots ~50cal"))["food_id"] == hits[2]["food_id"]
         with pytest.raises(ValueError, match="at ~500 cal"):
             api.resolve_item(parse_item("1 can carrots ~500cal"))
+
+    def test_unmet_hint_searches_other_spelling(self, api, monkeypatch):
+        ids = {"carbmaster vanilla": ["aa" * 16], "carb master vanilla": ["bb" * 16]}
+        names = {"aa" * 16: ("CARBmaster Milk Vanilla", 120.0), "bb" * 16: ("Carb Master Vanilla Milk", 160.0)}
+        for fid, (name, cal) in names.items():
+            make_food(api, fid, name, cal)
+        searched = []
+
+        def fake_search(query, limit=10, details=True):
+            searched.append(query)
+            return [{"food_id": f, "name": names[f][0], "brand": "Kroger", "category": "Milk"}
+                    for f in ids.get(query, [])]
+        monkeypatch.setattr(api, "search_foods", fake_search)
+        choice = api.resolve_item(parse_item("carbmaster vanilla ~160cal"))
+        assert searched == ["carbmaster vanilla", "carb master vanilla"]
+        assert choice["food_id"] == "bb" * 16 and "warning" not in choice
+        # a met hint doesn't trigger extra searches
+        searched.clear()
+        api.resolve_item(parse_item("carbmaster vanilla ~120cal"))
+        assert searched == ["carbmaster vanilla"]

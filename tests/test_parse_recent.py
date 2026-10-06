@@ -3,7 +3,7 @@ from datetime import date
 
 import pytest
 
-from loseit.client.parse import default_meal, parse_date, parse_item
+from loseit.client.parse import default_meal, parse_date, parse_item, query_variants
 from loseit.client.recent import RecentFoods, rank_search_results
 
 
@@ -132,3 +132,10 @@ def test_rank_search_results_prefers_closest_name():
     hits = [{"name": "Carrot cake w/cream cheese icing", "brand": ""},
             {"name": "Carrots, Medium", "brand": ""}]
     assert rank_search_results("carrot", hits)[0]["name"] == "Carrots, Medium"
+
+
+def test_query_variants_split_and_join_from_result_names():
+    names = ["CARBmaster Milk Vanilla Kroger", "Milk, CarbMaster, Vanilla"]
+    assert query_variants("carbmaster vanilla", names) == ["carb master vanilla"]
+    assert query_variants("carb master vanilla", names) == ["carbmaster vanilla"]
+    assert query_variants("whole milk", names) == []

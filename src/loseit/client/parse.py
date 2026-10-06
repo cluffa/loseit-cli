@@ -176,3 +176,36 @@ def default_meal(hour: int) -> str:
 def normalize_words(text: str) -> list[str]:
     words = re.findall(r"[a-z0-9]+", text.lower())
     return [w[:-1] if len(w) > 3 and w.endswith("s") else w for w in words]
+
+
+def _word_parts(word: str) -> list[str]:
+    """Split a CamelCase/CAPSlower word: "CARBmaster" -> ["CARB", "master"]."""
+    return re.findall(r"[A-Z]{2,}(?=[a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+", word)
+
+
+def query_variants(query: str, names: list[str]) -> list[str]:
+    """Other spellings of `query` worth searching, learned from result names.
+
+    LoseIt's search matches whole words, so "carbmaster" misses foods named
+    "Carb Master" and vice versa. A query word is split when both halves occur
+    in the names (including CamelCase parts: "CARBmaster" -> carb, master), and
+    adjacent query words are joined when the joined word occurs.
+    """
+    vocab = set()
+    for name in names:
+        for word in re.findall(r"[A-Za-z0-9]+", name):
+            vocab.add(word.lower())
+            vocab.update(p.lower() for p in _word_parts(word))
+    words = query.split()
+    out = []
+    for i, w in enumerate(words):
+        lw = re.sub(r"[^a-z0-9]", "", w.lower())
+        for cut in range(3, len(lw) - 2):
+            if lw[:cut] in vocab and lw[cut:] in vocab:
+                out.append(" ".join(words[:i] + [lw[:cut], lw[cut:]] + words[i + 1:]))
+                break
+        if i + 1 < len(words):
+            joined = re.sub(r"[^a-z0-9]", "", (w + words[i + 1]).lower())
+            if joined in vocab:
+                out.append(" ".join(words[:i] + [joined] + words[i + 2:]))
+    return list(dict.fromkeys(v for v in out if v.lower() != query.lower()))

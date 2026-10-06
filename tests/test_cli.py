@@ -135,3 +135,45 @@ class TestSkill:
         result = runner.invoke(main, ["skill", "install", "--dir", str(tmp_path)])
         assert result.exit_code == 0
         assert (tmp_path / "loseit" / "SKILL.md").read_text() == skill_text()
+
+
+class TestCompletion:
+    @pytest.fixture
+    def recents(self):
+        from datetime import date, timedelta
+        from loseit.client.recent import RecentFoods
+        today = date.today()
+        r = RecentFoods()
+        food = lambda fid, name, day, entry: {"food_id": fid, "entry_id": entry, "name": name, "brand": "",
+                                              "category": "", "amount": 1.0, "unit": "Serving",
+                                              "meal": "dinner", "calories": 94.0}
+        r.record_day((today - timedelta(days=1)).isoformat(), [food("m", "Mikes Hard Lemonade Zero Sugar", 1, "e1")])
+        r.record_day(today.isoformat(), [food("c", "Carb Master Vanilla Milk", 0, "e2")])
+        r.save()
+
+    def complete(self, args, incomplete):
+        from click.shell_completion import ShellComplete
+        from loseit.cli.main import main
+        return [c.value for c in ShellComplete(main, {}, "loseit", "_LOSEIT_COMPLETE")
+                .get_completions(args, incomplete)]
+
+    def test_commands(self):
+        assert "log" in self.complete([], "l")
+
+    def test_log_completes_recent_foods_most_recent_first(self, recents):
+        assert self.complete(["log"], "") == ["Carb Master Vanilla Milk", "Mikes Hard Lemonade Zero Sugar"]
+        assert self.complete(["log"], "mike") == ["Mikes Hard Lemonade Zero Sugar"]
+        assert self.complete(["log"], "lemon") == ["Mikes Hard Lemonade Zero Sugar"]   # substring
+
+    def test_edit_completes_entries_on_the_date(self, recents):
+        assert self.complete(["edit"], "") == ["Carb Master Vanilla Milk"]
+        assert self.complete(["delete", "--date", "yesterday"], "") == ["Mikes Hard Lemonade Zero Sugar"]
+
+    def test_dates_and_meals(self, recents):
+        assert self.complete(["status", "--date"], "yes") == ["yesterday"]
+        assert self.complete(["log", "--meal"], "d") == ["dinner"]
+
+    def test_completion_script(self, runner):
+        from loseit.cli.main import main
+        out = runner.invoke(main, ["completion", "zsh"]).output
+        assert "compinit" in out and "_LOSEIT_COMPLETE" in out
