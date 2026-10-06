@@ -147,8 +147,8 @@ class TestCompletion:
         food = lambda fid, name, day, entry: {"food_id": fid, "entry_id": entry, "name": name, "brand": "",
                                               "category": "", "amount": 1.0, "unit": "Serving",
                                               "meal": "dinner", "calories": 94.0}
-        r.record_day((today - timedelta(days=1)).isoformat(), [food("m", "Mikes Hard Lemonade Zero Sugar", 1, "e1")])
-        r.record_day(today.isoformat(), [food("c", "Carb Master Vanilla Milk", 0, "e2")])
+        r.record_day((today - timedelta(days=1)).isoformat(), [food("d", "Diet Cola", 1, "e1")])
+        r.record_day(today.isoformat(), [food("a", "Almond Milk, Vanilla", 0, "e2")])
         r.save()
 
     def complete(self, args, incomplete):
@@ -161,13 +161,13 @@ class TestCompletion:
         assert "log" in self.complete([], "l")
 
     def test_log_completes_recent_foods_most_recent_first(self, recents):
-        assert self.complete(["log"], "") == ["Carb Master Vanilla Milk", "Mikes Hard Lemonade Zero Sugar"]
-        assert self.complete(["log"], "mike") == ["Mikes Hard Lemonade Zero Sugar"]
-        assert self.complete(["log"], "lemon") == ["Mikes Hard Lemonade Zero Sugar"]   # substring
+        assert self.complete(["log"], "") == ["Almond Milk, Vanilla", "Diet Cola"]
+        assert self.complete(["log"], "diet") == ["Diet Cola"]
+        assert self.complete(["log"], "cola") == ["Diet Cola"]   # substring
 
     def test_edit_completes_entries_on_the_date(self, recents):
-        assert self.complete(["edit"], "") == ["Carb Master Vanilla Milk"]
-        assert self.complete(["delete", "--date", "yesterday"], "") == ["Mikes Hard Lemonade Zero Sugar"]
+        assert self.complete(["edit"], "") == ["Almond Milk, Vanilla"]
+        assert self.complete(["delete", "--date", "yesterday"], "") == ["Diet Cola"]
 
     def test_dates_and_meals(self, recents):
         assert self.complete(["status", "--date"], "yes") == ["yesterday"]

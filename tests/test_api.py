@@ -234,9 +234,9 @@ class TestAgentFlow:
 
     def test_count_unit_falls_back_to_foods_own_unit(self, api):
         food_id = "94bc756214614b11bdfe5f9e6463e334"
-        make_food(api, food_id, "Hard Lemonade", 94.0, measure=27)   # Serving
+        make_food(api, food_id, "Cola", 140.0, measure=27)   # Serving
         plan = api.describe_plan(api.plan_items([parse_item(f"1 can {food_id}")], "snacks", DAY)[0])
-        assert (plan["amount"], plan["unit"], plan["calories"]) == (1.0, "Serving", 94.0)
+        assert (plan["amount"], plan["unit"], plan["calories"]) == (1.0, "Serving", 140.0)
         assert "used Serving" in plan["notes"][0]
 
     def test_weight_unit_still_rejected_without_weight_option(self, api):
@@ -269,21 +269,21 @@ class TestAgentFlow:
             api.resolve_item(parse_item("1 can carrots ~500cal"))
 
     def test_unmet_hint_searches_other_spelling(self, api, monkeypatch):
-        ids = {"carbmaster vanilla": ["aa" * 16], "carb master vanilla": ["bb" * 16]}
-        names = {"aa" * 16: ("CARBmaster Milk Vanilla", 120.0), "bb" * 16: ("Carb Master Vanilla Milk", 160.0)}
+        ids = {"peanutbutter cookies": ["aa" * 16], "peanut butter cookies": ["bb" * 16]}
+        names = {"aa" * 16: ("PEANUTbutter Cookies", 120.0), "bb" * 16: ("Peanut Butter Cookies", 160.0)}
         for fid, (name, cal) in names.items():
             make_food(api, fid, name, cal)
         searched = []
 
         def fake_search(query, limit=10, details=True):
             searched.append(query)
-            return [{"food_id": f, "name": names[f][0], "brand": "Kroger", "category": "Milk"}
+            return [{"food_id": f, "name": names[f][0], "brand": "Generic", "category": "Cookie"}
                     for f in ids.get(query, [])]
         monkeypatch.setattr(api, "search_foods", fake_search)
-        choice = api.resolve_item(parse_item("carbmaster vanilla ~160cal"))
-        assert searched == ["carbmaster vanilla", "carb master vanilla"]
+        choice = api.resolve_item(parse_item("peanutbutter cookies ~160cal"))
+        assert searched == ["peanutbutter cookies", "peanut butter cookies"]
         assert choice["food_id"] == "bb" * 16 and "warning" not in choice
         # a met hint doesn't trigger extra searches
         searched.clear()
-        api.resolve_item(parse_item("carbmaster vanilla ~120cal"))
-        assert searched == ["carbmaster vanilla"]
+        api.resolve_item(parse_item("peanutbutter cookies ~120cal"))
+        assert searched == ["peanutbutter cookies"]

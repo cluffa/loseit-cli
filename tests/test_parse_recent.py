@@ -31,13 +31,13 @@ def test_parse_item(text, query, amount, unit, meal):
 
 
 @pytest.mark.parametrize("text, query, amount, unit, calories", [
-    ("1 can mike's hard lemonade ~95cal", "mike's hard lemonade", 1, "can", 95),
-    ("dinner: spam lite (110 cal)", "spam lite", None, None, 110),
+    ("1 can cola ~140cal", "cola", 1, "can", 140),
+    ("dinner: tuna salad (110 cal)", "tuna salad", None, None, 110),
     ("150g chicken breast ~250 kcal", "chicken breast", 150, "gram", 250),
     ("bagel 250 calories", "bagel", None, None, 250),
     ("calamari", "calamari", None, None, None),
-    ("45 calorie light style bread", "45 calorie light style bread", None, None, None),
-    ("bread 45 calories light style", "bread 45 calories light style", None, None, None),
+    ("45 calorie wheat bread", "45 calorie wheat bread", None, None, None),
+    ("bread 45 calories wheat", "bread 45 calories wheat", None, None, None),
     ("2 slices 45 calorie bread", "45 calorie bread", 2, "slice", None),
     ("4 slices 45 calorie bread ~180 cal", "45 calorie bread", 4, "slice", 180),
     ("bagel @250kcal", "bagel", None, None, 250),
@@ -123,7 +123,7 @@ class TestRecent:
 
     def test_search_hits_resolve_by_prefix(self):
         r = RecentFoods()
-        r.remember([{"food_id": "abcdef0123", "name": "Spam Lite", "brand": "Spam"}])
+        r.remember([{"food_id": "abcdef0123", "name": "Tuna Salad", "brand": "Generic"}])
         r.save()
         assert RecentFoods.load().find_by_prefix("abcdef") == ["abcdef0123"]
 
@@ -135,7 +135,7 @@ def test_rank_search_results_prefers_closest_name():
 
 
 def test_query_variants_split_and_join_from_result_names():
-    names = ["CARBmaster Milk Vanilla Kroger", "Milk, CarbMaster, Vanilla"]
-    assert query_variants("carbmaster vanilla", names) == ["carb master vanilla"]
-    assert query_variants("carb master vanilla", names) == ["carbmaster vanilla"]
+    names = ["PEANUTbutter Cookies", "Cookies, PeanutButter"]
+    assert query_variants("peanutbutter cookies", names) == ["peanut butter cookies"]
+    assert query_variants("peanut butter cookies", names) == ["peanutbutter cookies"]
     assert query_variants("whole milk", names) == []
