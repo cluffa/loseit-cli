@@ -1,0 +1,1 @@
+7|0|12|https://d3hsih69yn4d89.cloudfront.net/web/|8F87EC8969F17AE77B6283D3A83F6D4C|com.loseit.core.client.service.LoseItRemoteService|searchFoods|com.loseit.core.client.service.ServiceRequestToken/1076571655|java.lang.String/2004016611|I|Z|com.loseit.core.client.model.UserId/4281239478|test|carb master|en-US|1|2|3|4|6|5|6|6|7|8|8|5|0|9|12345678|10|-4|11|12|15|1|1|

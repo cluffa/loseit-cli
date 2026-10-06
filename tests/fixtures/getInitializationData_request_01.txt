@@ -1,0 +1,1 @@
+7|0|7|https://d3hsih69yn4d89.cloudfront.net/web/|8F87EC8969F17AE77B6283D3A83F6D4C|com.loseit.core.client.service.LoseItRemoteService|getInitializationData|com.loseit.core.client.service.ServiceRequestToken/1076571655|com.loseit.core.client.model.UserId/4281239478|test|1|2|3|4|1|5|5|0|6|12345678|7|-4|
