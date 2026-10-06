@@ -455,7 +455,7 @@ class LoseItAPI:
         self._estimate_calories(candidates)
         if not any(c["fits"] for c in candidates) or item.calories is not None:
             hits = self._add_search_candidates(item.query, item, candidates)
-            # Hint not met: try other spellings ("carbmaster" -> "carb master")
+            # Hint not met: try other spellings ("peanutbutter" -> "peanut butter")
             if item.calories is not None and not any(
                     c["fits"] and _near(c["calories"], item.calories) for c in candidates):
                 for variant in query_variants(item.query, [f"{h['name']} {h['brand']}" for h in hits])[:2]:

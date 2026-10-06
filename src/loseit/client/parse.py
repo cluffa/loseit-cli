@@ -179,16 +179,16 @@ def normalize_words(text: str) -> list[str]:
 
 
 def _word_parts(word: str) -> list[str]:
-    """Split a CamelCase/CAPSlower word: "CARBmaster" -> ["CARB", "master"]."""
+    """Split a CamelCase/CAPSlower word: "PEANUTbutter" -> ["PEANUT", "butter"]."""
     return re.findall(r"[A-Z]{2,}(?=[a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+", word)
 
 
 def query_variants(query: str, names: list[str]) -> list[str]:
     """Other spellings of `query` worth searching, learned from result names.
 
-    LoseIt's search matches whole words, so "carbmaster" misses foods named
-    "Carb Master" and vice versa. A query word is split when both halves occur
-    in the names (including CamelCase parts: "CARBmaster" -> carb, master), and
+    LoseIt's search matches whole words, so "peanutbutter" misses foods named
+    "Peanut Butter" and vice versa. A query word is split when both halves occur
+    in the names (including CamelCase parts: "PEANUTbutter" -> peanut, butter), and
     adjacent query words are joined when the joined word occurs.
     """
     vocab = set()
