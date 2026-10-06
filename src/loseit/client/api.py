@@ -346,7 +346,37 @@ class LoseItAPI:
 
     # core
     def call(self, method: str, *params, overload: int | None = None):
-        """Invoke a LoseItRemoteService method and return the decoded result."""
+        """Invoke a LoseItRemoteService method and return the decoded result.
+
+        LoseIt redeploys its web app periodically, invalidating the stored GWT
+        permutation/policy hash; the server then rejects every call with
+        IncompatibleRemoteServiceException. On that error the current app
+        version is re-discovered and the call retried once.
+        """
+        try:
+            return self._call(method, params, overload)
+        except LoseItError as e:
+            if "IncompatibleRemoteServiceException" not in str(e):
+                raise
+        self._refresh_gwt_version()
+        return self._call(method, params, overload)
+
+    def _refresh_gwt_version(self):
+        """Re-discover the deployed GWT permutation after a LoseIt redeploy."""
+        from .auth import discover_gwt_versions
+        permutation, policy_hash = discover_gwt_versions(self._client, self.GWT_BASE_URL)
+        if (permutation, policy_hash) == (self._session.gwt_permutation,
+                                          self._session.policy_hash):
+            raise LoseItError("LoseIt rejected the call: IncompatibleRemoteServiceException "
+                              "even with the current app version")
+        self._session.gwt_permutation = permutation
+        self._session.policy_hash = policy_hash
+        self._client.headers["X-GWT-Permutation"] = permutation
+        SessionStore.save(self._session)
+        self._schema = None  # re-extract from the new permutation's scripts
+
+    def _call(self, method: str, params: tuple, overload: int | None):
+        """Encode, post and decode one RPC with the current GWT version."""
         overloads = [o for o in self.schema["methods"].get(method, []) if len(o) == len(params)]
         if not overloads:
             raise RuntimeError(f"Unknown method or arity: {method}/{len(params)}")

@@ -97,6 +97,25 @@ def _matching_paren(s: str, open_idx: int) -> int:
     return j
 
 
+def _canonical_entry(body: str, name: str) -> str:
+    """Rewrite GWT's obfuscated entry/exit boilerplate to canonical names.
+
+    Every compiled function starts `var <vs>;ARR[IDX=++CNT]=<name>;` and ends
+    each exit path with `CNT=IDX-1`. GWT renames the ARR/CNT globals on every
+    compile (ATv/BTv, fQv/gQv, ...), so both are normalized here (the exit can
+    sit anywhere in the body, not just after the entry); downstream patterns
+    are written against the canonical ATv/BTv/c.
+    """
+    m = re.match(r"var ([\w$,]+);[\w$]+\[([\w$]+)=\+\+([\w$]+)\]=" +
+                 re.escape(name) + r";", body)
+    if not m:
+        return body
+    vs, idx, cnt = m.group(1), m.group(2), m.group(3)
+    rest = re.sub(rf"(?<![\w$]){re.escape(cnt)}={re.escape(idx)}-1(?![\w$])",
+                  "BTv=c-1", body[m.end():])
+    return f"var {vs};ATv[c=++BTv]={name};" + rest
+
+
 class _Compiler:
     def __init__(self, js: str):
         self.funcs = _function_bodies(js)
@@ -104,7 +123,7 @@ class _Compiler:
         self.write_prims = self._find_write_primitives()
 
     def _body_is(self, name: str, pattern: str) -> bool:
-        body = self.funcs[name][1]
+        body = _canonical_entry(self.funcs[name][1], name)
         return re.fullmatch(rf"var [\w$,]+;ATv\[[\w$]+=\+\+BTv\]={re.escape(name)};{pattern}", body) is not None
 
     def _find_read_primitives(self) -> dict[str, str]:
@@ -121,7 +140,8 @@ class _Compiler:
                 elif re.match(rf"var a={r}\.b\[--{r}\.a\],c,d;", body):
                     prims[name] = LONG
             elif len(params) == 2 and re.fullmatch(
-                    rf"var c;ATv\[c=\+\+BTv\]={re.escape(name)};BTv=c-1;return a>0\?b\.d\[a-1\]:null", body):
+                    rf"var c;ATv\[c=\+\+BTv\]={re.escape(name)};BTv=c-1;return a>0\?b\.d\[a-1\]:null",
+                    _canonical_entry(body, name)):
                 prims[name] = STRING
         if STRING not in prims.values() or OBJECT not in prims.values():
             raise SchemaError("Could not identify GWT stream reader primitives")
@@ -144,7 +164,7 @@ class _Compiler:
                 prims[name] = BOOL
             elif self._body_is(name, r"[\w$]+\(a\.a,''\+b\);BTv=c-1"):
                 prims[name] = NUMBER
-            elif "lm(a.i,b)" in body or re.search(r"lm\(a\.i,b\);c=a\.i\.a\.length", body):
+            elif re.search(r"lm\(a\.[\w$]+,b\)", body):
                 prims[name] = "strref"
         # writeString: fHd(a,''+<strref>(a,b))
         refs = [k for k, v in prims.items() if v == "strref"]
