@@ -313,7 +313,7 @@ def status(target_date: str | None, as_json: bool):
     from loseit.cli.formatting import print_status
 
     summary = LoseItAPI().get_daily_summary(_date(target_date))
-    data = {k: v for k, v in summary.items() if k != "foods"}
+    data = {k: v for k, v in summary.items() if k not in ("foods", "exercises")}
     emit(data, as_json, lambda d: print_status(summary))
 
 
@@ -333,6 +333,11 @@ def summary(target_date: str | None, as_json: bool):
                     [[f["entry_id"][:8], f["meal"], f["name"], f"{f['amount']:g} {f['unit']}",
                       f"{f['calories']:g}"] for f in r["foods"]],
                     title=f"Summary: {r['date']}")
+        if r["exercises"]:
+            print_table(["Exercise", "Source", "Min", "Cal"],
+                        [[x["name"], x["source"], x["minutes"] or "",
+                          f"{x['calories']:g}" + ("" if x["credited"] else " (in adjustment)")]
+                         for x in r["exercises"]])
         print_status(r)
     emit(result, as_json, human)
 
