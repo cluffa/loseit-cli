@@ -25,12 +25,12 @@ loseit log --date yesterday \
 - **Calorie hint:** `~95cal` (also `(95 cal)`, `@95kcal`, or `95 calories` at the end). The user's recent foods and the top search hits are all candidates, and the one closest to the hint for that amount wins. Whenever the user says how many calories something has, pass it. It's the best protection against regular vs. light vs. zero-sugar mix-ups (a regular cola is ~140 cal, a diet one ~0) and bad database entries.
 - **No amount:** a recent food is logged at the amount the user used last time.
 - **Count units** (`can`, `bottle`, `each`, `slice`): these map onto the best match's own unit ("1 Serving"), with a note. They never pull in a different product. If nothing comes in that unit, the error lists the matches and their units; retry with a weight (`5 oz tuna`) or a calorie hint.
-- **Meal:** if no meal is given, today's items are placed by time of day, and other days use the food's usual meal. After midnight, "dinner" usually means yesterday, so pass `--date yesterday`.
+- **Meal:** if no meal is given, today's items are placed by time of day, and other days use the food's usual meal. Snacks have slots: `early-snacks`, `morning-snacks`, `afternoon-snacks`, `late-snacks` (as a prefix or `--meal`); plain `snacks` leaves the slot as it is, and as a filter it matches every slot. After midnight, "dinner" usually means yesterday, so pass `--date yesterday`.
 - **Preview:** `--dry-run` shows what would be logged without writing anything.
 
 ## Reading the result
 
-Each item in `logged` has `name`, `amount`, `unit`, `calories`, `meal` and `entry_id`. It may also have:
+Each item in `logged` has `name`, `amount`, `unit`, `calories`, `meal`, `snack_slot` (`early`/`morning`/`afternoon`/`late` for snacks, else null) and `entry_id`. It may also have:
 
 - `notes`: a unit was swapped, the hint didn't match, or the entry is unusually large. Mention these to the user.
 - `alternatives`: other candidates, with `calories` and `food_id`.
