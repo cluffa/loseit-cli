@@ -93,6 +93,24 @@ class TestSummaries:
         assert s["weight"] == pytest.approx(213.2)
         assert s["goal_weight"] == 195.0
 
+    def test_tracker_workouts_not_counted_twice(self):
+        details = decode("getDailyDetailsIncludingPendingForDate_response_01.txt")
+        adjustment = details.fields[4].fields[0][0]
+        adjustment.fields[1] = 735.0
+        workout = copy.deepcopy(adjustment)
+        workout.fields[1], workout.fields[6], workout.fields[9] = 719.0, True, 62
+        workout.fields[4].fields[4] = "Running with Garmin"
+        manual = copy.deepcopy(workout)
+        manual.fields[1] = 100.0
+        manual.fields[4].fields[2], manual.fields[4].fields[4] = "Cycling", "Cycling"
+        details.fields[4].fields[0] = [adjustment, workout, manual]
+        s = summarize_daily_details(details, date(2026, 7, 27))
+        assert s["exercise_calories"] == 835.0
+        assert s["calories_remaining"] == 1403.8 + 835.0
+        assert [x["credited"] for x in s["exercises"]] == [True, False, True]
+        assert s["exercises"][1] == {"name": "Running with Garmin", "source": "Garmin", "calories": 719.0,
+                                     "minutes": 62, "adjustment": False, "credited": False}
+
     def test_entries_scale_by_servings_logged(self, day_details):
         pie = day_details.fields[5].fields[0][0]
         pie.fields[2].fields[0].fields[1] = 2.0   # 2 servings logged of a 1-serving nutrient set
