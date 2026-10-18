@@ -215,6 +215,58 @@ class TestEditDelete:
         assert [c["meal"] for c in out["copied"]] == ["lunch"]
 
 
+
+class TestSnackSlots:
+    @pytest.fixture
+    def snacks(self, api, day_details):
+        """The breakfast pie made a morning snack, the dinner pie a late snack."""
+        for entry, slot in zip(day_details.fields[5].fields[0], (1, 3)):
+            ctx = entry.fields[1]
+            ctx.fields[8] = GEnum("FoodLogEntryType", 3, ctx.fields[8].signature)
+            ctx.fields[9] = GEnum("FoodLogEntryTypeExtra", slot, api.sig("FoodLogEntryTypeExtra"))
+        return day_details
+
+    def test_summary_has_slot(self, snacks):
+        s = summarize_daily_details(snacks, DAY)
+        assert [(f["meal"], f["snack_slot"]) for f in s["foods"]] == [("snacks", "morning"), ("snacks", "late")]
+
+    def test_non_snacks_have_no_slot(self, day_details):
+        day_details.fields[5].fields[0][0].fields[1].fields[9] = GEnum("FoodLogEntryTypeExtra", 3, "sig")
+        assert summarize_daily_details(day_details, DAY)["foods"][0]["snack_slot"] is None
+
+    def test_log_into_slot(self, api):
+        out = api.log_items([parse_item("afternoon-snack: 94bc756214614b11bdfe5f9e6463e334")], None, DAY)
+        ctx = api.fake.saved()[0].fields[1]
+        assert (ctx.fields[8].ordinal, ctx.fields[9].ordinal) == (3, 2)
+        assert (out["logged"][0]["meal"], out["logged"][0]["snack_slot"]) == ("snacks", "afternoon")
+
+    def test_plain_snacks_leaves_slot_unset(self, api):
+        api.log_items([parse_item("snacks: 94bc756214614b11bdfe5f9e6463e334")], None, DAY)
+        assert api.fake.saved()[0].fields[1].fields[9] is None
+
+    def test_edit_moves_between_slots(self, api, snacks):
+        entry_id = key_to_hex(snacks.fields[5].fields[0][1].fields[6])
+        out = api.edit_entry(entry_id, DAY, meal="early-snacks")
+        assert api.fake.saved()[0].fields[1].fields[9].ordinal == 0
+        assert out["updated"]["snack_slot"] == "early"
+
+    def test_filter_by_slot(self, api, snacks):
+        out = api.delete_entries(DAY, ["pie"], meal="late-snacks")
+        assert [d["snack_slot"] for d in out["deleted"]] == ["late"]
+        out = api.delete_entries(DAY, [], all_entries=True, meal="snacks")
+        assert len(out["deleted"]) == 2
+
+    def test_copy_and_move_keep_slot(self, api, snacks):
+        api.copy_entries(DAY, date(2026, 10, 7), meal="morning-snacks")
+        entry_id = key_to_hex(snacks.fields[5].fields[0][1].fields[6])
+        api.edit_entry(entry_id, DAY, move_to=date(2026, 10, 7))
+        assert [e.fields[1].fields[9].ordinal for e in api.fake.saved()] == [1, 3]
+
+    def test_bad_meal(self, api):
+        with pytest.raises(ValueError, match="Meal must be one of"):
+            api.log_items([parse_item("94bc756214614b11bdfe5f9e6463e334")], "brunch-snacks", DAY)
+
+
 def make_food(api, food_id: str, name: str, calories: float, measure: int = 5):
     """A getFood result like the recorded pie, with another id/name/calories/unit."""
     food = copy.deepcopy(decode("getFood_response_01.txt"))

@@ -8,6 +8,8 @@ from fractions import Fraction
 
 MEAL_WORDS = {"breakfast": "breakfast", "lunch": "lunch", "dinner": "dinner",
               "snack": "snacks", "snacks": "snacks"}
+for _slot in ("early", "morning", "afternoon", "late"):
+    MEAL_WORDS[f"{_slot}-snack"] = MEAL_WORDS[f"{_slot}-snacks"] = f"{_slot}-snacks"
 
 # Unit words accepted in item text -> canonical unit name (see api.find_measure)
 UNIT_WORDS = {
@@ -100,12 +102,13 @@ def _parse_item(text: str) -> Item:
     Without a unit the number counts servings ("2 eggs"). Examples:
       "150g chicken breast"  -> 150 gram of "chicken breast"
       "lunch: 2 eggs"        -> 2 servings of "eggs", meal lunch
+      "late-snacks: apple"   -> "apple", meal late-snacks
       "1 1/2 cups rice"      -> 1.5 cup of "rice"
       "oatmeal 40 g"         -> 40 gram of "oatmeal"
     """
     s = text.strip()
     meal = None
-    m = re.match(r"^(\w+)\s*:\s*(.+)$", s)
+    m = re.match(r"^([\w-]+)\s*:\s*(.+)$", s)
     if m and m.group(1).lower() in MEAL_WORDS:
         meal, s = MEAL_WORDS[m.group(1).lower()], m.group(2).strip()
     if not s:

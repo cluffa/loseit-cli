@@ -31,6 +31,8 @@ Quick reference (JSON output when piped; dates: today|yesterday|tomorrow|±N|YYY
       ITEM = "[meal:] [amount][unit] food [~CAL cal]", e.g. "lunch: 150g chicken breast",
       "2 eggs", "bagel" (no amount = what you logged last time), a food id (prefix ok),
       or "1 can cola ~140cal" (picks the match closest to 140 cal)
+      meals: breakfast, lunch, dinner, snacks, or a snack slot: early-snacks,
+      morning-snacks, afternoon-snacks, late-snacks
   loseit edit ENTRY [--amount N --unit U | --servings N] [--meal M] [--move-to D]
                     [--food "FOOD"]        --food swaps the food, keeping meal and amount
   loseit delete ENTRY... | --all [--meal M]   [--date D]
@@ -87,7 +89,7 @@ def cli_error_handler(func):
                     "type": "partial", "message": str(e), "failed_input": e.failed_input}}, indent=2))
             else:
                 for x in e.logged:
-                    click.echo(f"✓ {x['amount']:g} {x['unit']} {x['name']} → {x['meal']} ({x['entry_id'][:8]})")
+                    click.echo(f"✓ {x['amount']:g} {x['unit']} {x['name']} → {_where(x)} ({x['entry_id'][:8]})")
                 click.echo(f"Error: {e}", err=True)
             raise SystemExit(EXIT_ERROR)
         except LoseItError as e:
@@ -181,14 +183,21 @@ def _date(value):
     return parse_date(value)
 
 
-MEAL_CHOICE = click.Choice(["breakfast", "lunch", "dinner", "snack", "snacks"], case_sensitive=False)
+SNACK_SLOT_MEALS = [f"{slot}-snacks" for slot in ("early", "morning", "afternoon", "late")]
+MEAL_CHOICE = click.Choice(["breakfast", "lunch", "dinner", "snack", "snacks", *SNACK_SLOT_MEALS],
+                           case_sensitive=False)
 
 
 def _meal(value):
     if value is None:
         return None
     value = value.lower()
-    return "snacks" if value == "snack" else value
+    return value + "s" if value.endswith("snack") else value
+
+
+def _where(e: dict) -> str:
+    """An entry's meal for display: "lunch", "morning-snacks", ..."""
+    return f"{e['snack_slot']}-snacks" if e.get("snack_slot") else e["meal"]
 
 
 @click.group(help=AGENT_HELP)
@@ -330,7 +339,7 @@ def summary(target_date: str | None, as_json: bool):
 
     def human(r):
         print_table(["Entry", "Meal", "Food", "Amount", "Cal"],
-                    [[f["entry_id"][:8], f["meal"], f["name"], f"{f['amount']:g} {f['unit']}",
+                    [[f["entry_id"][:8], _where(f), f["name"], f"{f['amount']:g} {f['unit']}",
                       f"{f['calories']:g}"] for f in r["foods"]],
                     title=f"Summary: {r['date']}")
         if r["exercises"]:
@@ -474,7 +483,7 @@ def log(items: tuple[str, ...], meal: str | None, target_date: str | None, amoun
         for e in r["logged"]:
             src = "" if e["matched_by"] == "id" else f" [{e['matched_by']}]"
             click.echo(f"✓ {e['amount']:g} {e['unit']} {e['name']} — {e['calories']:g} cal → "
-                       f"{e['meal']} ({e['entry_id'][:8]}){src}")
+                       f"{_where(e)} ({e['entry_id'][:8]}){src}")
             _human_notes(e)
         _human_day(r["day"])
     emit(result, as_json, human)
@@ -516,7 +525,7 @@ def edit(entry: str, target_date: str | None, amount: float | None, unit: str | 
         e = r["updated"]
         was = f" (was {e['replaced']['name']})" if "replaced" in e else ""
         click.echo(f"✓ {e['name']}: {e['amount']:g} {e['unit']} — {e['calories']:g} cal, "
-                   f"{e['meal']} on {e['date']} ({e['entry_id'][:8]}){was}")
+                   f"{_where(e)} on {e['date']} ({e['entry_id'][:8]}){was}")
         _human_notes(e)
         _human_day(r["day"])
     emit(result, as_json, human)
@@ -542,7 +551,7 @@ def delete(entries: tuple[str, ...], target_date: str | None, all_entries: bool,
         if not r["deleted"]:
             click.echo("Nothing to delete.")
         for e in r["deleted"]:
-            click.echo(f"✓ Deleted {e['name']} ({e['meal']}, {e['entry_id'][:8]})")
+            click.echo(f"✓ Deleted {e['name']} ({_where(e)}, {e['entry_id'][:8]})")
         _human_day(r["day"])
     emit(result, as_json, human)
 
@@ -568,7 +577,7 @@ def copy(from_date: str, meal: str | None, target_date: str | None, to_meal: str
     def human(r):
         for e in r["copied"]:
             click.echo(f"✓ {e['amount']:g} {e['unit']} {e['name']} — {e['calories']:g} cal → "
-                       f"{e['meal']} ({e['entry_id'][:8]})")
+                       f"{_where(e)} ({e['entry_id'][:8]})")
         _human_day(r["day"])
     emit(result, as_json, human)
 
