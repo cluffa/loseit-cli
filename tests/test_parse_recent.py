@@ -11,6 +11,8 @@ from loseit.client.recent import RecentFoods, rank_search_results
     ("150g chicken breast", "chicken breast", 150, "gram", None),
     ("lunch: 2 eggs", "eggs", 2, None, "lunch"),
     ("snack: 28 g cheez it", "cheez it", 28, "gram", "snacks"),
+    ("morning-snack: apple", "apple", None, None, "morning-snacks"),
+    ("Late-Snacks: 2 cookies", "cookies", 2, None, "late-snacks"),
     ("1 1/2 cups rice", "rice", 1.5, "cup", None),
     ("1/2 avocado", "avocado", 0.5, None, None),
     ("3 oz of salmon", "salmon", 3, "ounce", None),

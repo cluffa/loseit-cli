@@ -33,6 +33,43 @@ _NUTRIENTS = {"calories": 0, "fat_g": 3, "saturated_fat_g": 4, "cholesterol_mg":
               "sodium_mg": 9, "carbs_g": 10, "fiber_g": 11, "sugar_g": 12, "protein_g": 13}
 # FoodLogEntryType enum ordinals
 MEALS = ["breakfast", "lunch", "dinner", "snacks"]
+# FoodLogEntryTypeExtra ordinals: the snack slot, for snacks entries only
+# (breakfast/lunch/dinner entries carry 3 as a default)
+SNACK_SLOTS = ["early", "morning", "afternoon", "late"]
+MEAL_NAMES = MEALS + [f"{slot}-snacks" for slot in SNACK_SLOTS]
+
+
+def parse_meal(meal: str) -> tuple[str, int | None]:
+    """"lunch" -> ("lunch", None); "morning-snacks" -> ("snacks", 1)."""
+    if meal in MEALS:
+        return meal, None
+    slot = meal.removesuffix("-snacks")
+    if meal.endswith("-snacks") and slot in SNACK_SLOTS:
+        return "snacks", SNACK_SLOTS.index(slot)
+    raise ValueError(f"Meal must be one of {', '.join(MEAL_NAMES)}")
+
+
+def entry_meal(ctx: GObject) -> tuple[str, str | None]:
+    """(meal, snack slot) of a FoodLogEntryContext, e.g. ("snacks", "morning")."""
+    meal = MEALS[ctx.fields[8].ordinal] if ctx.fields[8] and ctx.fields[8].ordinal < len(MEALS) else "other"
+    extra = ctx.fields[9]
+    slot = SNACK_SLOTS[extra.ordinal] if meal == "snacks" and extra and extra.ordinal < len(SNACK_SLOTS) else None
+    return meal, slot
+
+
+def meal_matches(ctx: GObject, meal: str) -> bool:
+    """Whether an entry is in `meal`; plain "snacks" matches every snack slot."""
+    want, want_slot = parse_meal(meal)
+    have, have_slot = entry_meal(ctx)
+    return have == want and (want_slot is None or have_slot == SNACK_SLOTS[want_slot])
+
+
+def meal_name(ctx: GObject) -> str:
+    """The meal as accepted back by --meal: "lunch", "morning-snacks", ..."""
+    meal, slot = entry_meal(ctx)
+    return f"{slot}-snacks" if slot else meal
+
+
 # FoodMeasure enum, by ordinal: (display name, dimension, size in g or ml)
 _MEASURES = [
     ("None", None, 0), ("Teaspoon", "vol", 4.92892), ("Tablespoon", "vol", 14.7868),
@@ -130,7 +167,7 @@ def summarize_daily_details(details: GObject, target_date: date) -> dict:
                         [4] Exercise([2] source/category name, [4] name),
                         [6] False for a tracker adjustment, [9] minutes
       FoodLogEntry: [0] FoodIdentifier([3] name, [4] brand, [9] food key),
-                    [1] FoodLogEntryContext([8] meal enum),
+                    [1] FoodLogEntryContext([8] meal enum, [9] snack slot enum),
                     [2] FoodServing([0] FoodNutrients([2] {FoodMeasurement: value}),
                                     [1] FoodServingSize([0] base servings, [2] unit, [5] amount)),
                     [6] entry key
@@ -144,14 +181,15 @@ def summarize_daily_details(details: GObject, target_date: date) -> dict:
     for entry in (foods.fields[0] if foods else []):
         ident, ctx, serving = entry.fields[0], entry.fields[1], entry.fields[2]
         nutrients = entry_nutrients(serving)
-        meal = ctx.fields[8]
+        meal, slot = entry_meal(ctx)
         foods_out.append({
             "entry_id": key_to_hex(entry.fields[6]),
             "food_id": key_to_hex(ident.fields[9]),
             "name": ident.fields[3],
             "brand": ident.fields[4] or "",
             "category": ident.fields[1] or "",
-            "meal": MEALS[meal.ordinal] if meal and meal.ordinal < len(MEALS) else "other",
+            "meal": meal,
+            "snack_slot": slot,
             "amount": round(serving.fields[1].fields[5], 2),
             "unit": measure_name(serving.fields[1].fields[2]),
             "calories": round(nutrients.get(_NUTRIENTS["calories"], 0.0), 1),
@@ -591,10 +629,12 @@ class LoseItAPI:
         serving.fields[0].fields[1] = size.fields[0]   # servings logged
         serving.fields[1] = size
 
-    def _meal_enum(self, meal: str) -> GEnum:
-        if meal not in MEALS:
-            raise ValueError(f"Meal must be one of {', '.join(MEALS)}")
-        return GEnum("FoodLogEntryType", MEALS.index(meal), self.sig("FoodLogEntryType"))
+    def _set_meal(self, ctx: GObject, meal: str) -> None:
+        """Put an entry in `meal`. Plain "snacks" leaves the snack slot as is."""
+        base, slot = parse_meal(meal)
+        ctx.fields[8] = GEnum("FoodLogEntryType", MEALS.index(base), self.sig("FoodLogEntryType"))
+        if slot is not None:
+            ctx.fields[9] = GEnum("FoodLogEntryTypeExtra", slot, self.sig("FoodLogEntryTypeExtra"))
 
     def _save_entry(self, entry: GObject) -> None:
         overload = self._single_entry_overload("updateFoodLogEntry")
@@ -603,7 +643,7 @@ class LoseItAPI:
     def _plan(self, food_id: str, amount: float | None, unit: str | None,
               servings: float | None, meal: str) -> dict:
         """Resolve everything needed to log a food, without writing."""
-        self._meal_enum(meal)
+        parse_meal(meal)
         food = self._food(food_id)
         size, note = self._serving_for(food, amount, unit, servings)
         calories = _calories(food, size)
@@ -621,10 +661,10 @@ class LoseItAPI:
         ctx = entry.fields[1]
         ctx.fields[1] = self.day_date(target_date)
         ctx.fields[4] = -1
-        ctx.fields[8] = self._meal_enum(plan["meal"])
+        self._set_meal(ctx, plan["meal"])
         self._apply_serving(entry, plan["size"])
         self._save_entry(entry)
-        return _entry_result(entry, target_date, plan["meal"], plan["food_id"])
+        return _entry_result(entry, target_date, plan["food_id"])
 
     def log_food(self, food_id: str, amount: float | None = None, unit: str | None = None,
                  servings: float | None = None, meal_type: str = "breakfast",
@@ -693,7 +733,7 @@ class LoseItAPI:
         """Entries by id prefix (hex) or by food name words, e.g. "bagel"."""
         foods = details.fields[5].fields[0] if details.fields[5] else []
         if meal:
-            foods = [e for e in foods if MEALS[e.fields[1].fields[8].ordinal] == meal]
+            foods = [e for e in foods if meal_matches(e.fields[1], meal)]
         found = []
         for ref in refs:
             ref_l = ref.lower()
@@ -737,7 +777,7 @@ class LoseItAPI:
                 size, _ = self._serving_for(food, amount, unit, servings)
             self._apply_serving(entry, size)
         if meal is not None:
-            entry.fields[1].fields[8] = self._meal_enum(meal)
+            self._set_meal(entry.fields[1], meal)
         if move_to is not None and move_to != target_date:
             # Changing an entry's day in place leaves it listed on the old day,
             # so a move is: save a fresh entry on the new day, then delete the old.
@@ -746,7 +786,7 @@ class LoseItAPI:
                               entry.fields[0].fields[3])
             moved.fields[1].fields[1] = self.day_date(move_to)
             moved.fields[1].fields[4] = -1
-            moved.fields[1].fields[8] = entry.fields[1].fields[8]
+            moved.fields[1].fields[8:10] = entry.fields[1].fields[8:10]
             moved.fields[2] = entry.fields[2]
             self._save_entry(moved)
             self.call("deleteFoodLogEntry", self.token(), entry)
@@ -755,8 +795,7 @@ class LoseItAPI:
             move_to = None
             self._save_entry(entry)
         day = move_to or target_date
-        result = _entry_result(entry, day, MEALS[entry.fields[1].fields[8].ordinal],
-                               key_to_hex(entry.fields[0].fields[9]))
+        result = _entry_result(entry, day, key_to_hex(entry.fields[0].fields[9]))
         result["status"] = "updated"
         out = {"updated": result, "day": self.day_totals(self._day(day)[1])}
         if move_to is not None:
@@ -777,7 +816,7 @@ class LoseItAPI:
         choice = self.resolve_item(item)
         day = move_to or target_date
         plan = self._plan(choice["food_id"], *_size_args(choice["amount"], choice["unit"]),
-                          meal or MEALS[entry.fields[1].fields[8].ordinal])
+                          meal or meal_name(entry.fields[1]))
         result = self._commit(plan, day)
         self.call("deleteFoodLogEntry", self.token(), entry)
         result.update(status="replaced", matched_by=choice["source"],
@@ -800,15 +839,15 @@ class LoseItAPI:
         if all_entries:
             entries = details.fields[5].fields[0] if details.fields[5] else []
             if meal:
-                self._meal_enum(meal)
-                entries = [e for e in entries if MEALS[e.fields[1].fields[8].ordinal] == meal]
+                entries = [e for e in entries if meal_matches(e.fields[1], meal)]
         else:
             entries = self._find_entries(details, entry_ids or [], meal)
         deleted = []
         for e in entries:
             self.call("deleteFoodLogEntry", self.token(), e)
+            entry_m, slot = entry_meal(e.fields[1])
             deleted.append({"entry_id": key_to_hex(e.fields[6]), "name": e.fields[0].fields[3],
-                            "meal": MEALS[e.fields[1].fields[8].ordinal]})
+                            "meal": entry_m, "snack_slot": slot})
         return {"deleted": deleted, "day": self.day_totals(self._day(target_date)[1])}
 
     def copy_entries(self, from_date: date, to_date: date, meal: str | None = None,
@@ -817,12 +856,11 @@ class LoseItAPI:
         details = self._daily_details(from_date)
         entries = details.fields[5].fields[0] if details.fields[5] else []
         if meal:
-            self._meal_enum(meal)
-            entries = [e for e in entries if MEALS[e.fields[1].fields[8].ordinal] == meal]
+            entries = [e for e in entries if meal_matches(e.fields[1], meal)]
         if not entries:
             raise LookupError(f"Nothing logged{' for ' + meal if meal else ''} on {from_date}")
         if to_meal:
-            self._meal_enum(to_meal)
+            parse_meal(to_meal)
         copied = []
         for e in entries:
             food_id = key_to_hex(e.fields[0].fields[9])
@@ -830,10 +868,12 @@ class LoseItAPI:
                             e.fields[0].fields[3])
             new.fields[1].fields[1] = self.day_date(to_date)
             new.fields[1].fields[4] = -1
-            new.fields[1].fields[8] = self._meal_enum(to_meal) if to_meal else e.fields[1].fields[8]
+            new.fields[1].fields[8:10] = e.fields[1].fields[8:10]
+            if to_meal:
+                self._set_meal(new.fields[1], to_meal)
             new.fields[2] = e.fields[2]
             self._save_entry(new)
-            copied.append(_entry_result(new, to_date, MEALS[new.fields[1].fields[8].ordinal], food_id))
+            copied.append(_entry_result(new, to_date, food_id))
         return {"copied": copied, "day": self.day_totals(self._day(to_date)[1])}
 
     def delete_food_log_entry(self, entry_id: str, target_date: date | None = None) -> dict:
@@ -905,9 +945,10 @@ def _convertible(size: GObject, unit: str) -> bool:
     return find_measure(unit) == size.fields[2].ordinal or bool(dim and _MEASURES[find_measure(unit)][1] == dim)
 
 
-def _entry_result(entry: GObject, day: date, meal: str, food_id: str) -> dict:
+def _entry_result(entry: GObject, day: date, food_id: str) -> dict:
     size = entry.fields[2].fields[1]
     totals = entry_nutrients(entry.fields[2])
+    meal, slot = entry_meal(entry.fields[1])
     return {
         "status": "logged",
         "entry_id": key_to_hex(entry.fields[6]),
@@ -918,6 +959,7 @@ def _entry_result(entry: GObject, day: date, meal: str, food_id: str) -> dict:
         "unit": measure_name(size.fields[2]),
         "calories": round(totals.get(0, 0.0), 1),
         "meal": meal,
+        "snack_slot": slot,
         "date": day.isoformat(),
     }
 
