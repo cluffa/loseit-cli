@@ -126,7 +126,9 @@ def summarize_daily_details(details: GObject, target_date: date) -> dict:
       DailyLogEntry: [4] food calories,
                      [6] DailyLogGoalsState([0] calorie budget,
                                             [1] CalorieBurnMetrics([1] daily burn target))
-      ExerciseLogEntry: [1] calories burned
+      ExerciseLogEntry: [1] calories burned,
+                        [4] Exercise([2] source/category name, [4] name),
+                        [6] False for a tracker adjustment, [9] minutes
       FoodLogEntry: [0] FoodIdentifier([3] name, [4] brand, [9] food key),
                     [1] FoodLogEntryContext([8] meal enum),
                     [2] FoodServing([0] FoodNutrients([2] {FoodMeasurement: value}),
@@ -157,7 +159,7 @@ def summarize_daily_details(details: GObject, target_date: date) -> dict:
         for key, ordinal in _NUTRIENTS.items():
             totals[key] += nutrients.get(ordinal, 0.0)
 
-    exercise = float(sum(e.fields[1] for e in (exercises.fields[0] if exercises else [])))
+    exercises_out, exercise = summarize_exercises(exercises.fields[0] if exercises else [])
     goals_state = log_entry.fields[6] if log_entry else None
     budget = goals_state.fields[0] if goals_state else 0.0
     burn = goals_state.fields[1].fields[1] if goals_state and goals_state.fields[1] else None
@@ -175,7 +177,35 @@ def summarize_daily_details(details: GObject, target_date: date) -> dict:
         "goal_weight": goals.fields[10] if goals else None,
         "nutrients": {k: round(v, 1) for k, v in totals.items() if k != "calories"},
         "foods": foods_out,
+        "exercises": exercises_out,
     }
+
+
+def summarize_exercises(entries: list) -> tuple[list[dict], float]:
+    """List a day's exercise entries and total the calories LoseIt credits.
+
+    A tracker (e.g. Garmin) logs a "<Tracker> Adjustment" entry, its calorie
+    burn bonus, alongside the workouts it synced ("Running with Garmin"). The
+    adjustment already includes those workouts, so they're listed but not
+    counted again (they're marked "credited": false).
+    """
+    out = []
+    for e in entries:
+        ex = e.fields[4]
+        name = (ex.fields[4] if ex else None) or ""
+        source = (ex.fields[2] if ex else None) or ""
+        out.append({
+            "name": name,
+            "source": source,
+            "calories": round(float(e.fields[1]), 1),
+            "minutes": e.fields[9] or None,
+            "adjustment": name.endswith(" Adjustment") and not e.fields[6],
+        })
+    trackers = {x["name"].removesuffix(" Adjustment") for x in out if x["adjustment"]}
+    for x in out:
+        x["credited"] = x["adjustment"] or not any(
+            x["source"] == t or x["name"].endswith(f" with {t}") for t in trackers)
+    return out, float(sum(x["calories"] for x in out if x["credited"]))
 
 
 def summarize_food(food: GObject) -> dict:
