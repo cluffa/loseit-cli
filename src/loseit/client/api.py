@@ -64,6 +64,11 @@ def meal_matches(ctx: GObject, meal: str) -> bool:
     return have == want and (want_slot is None or have_slot == SNACK_SLOTS[want_slot])
 
 
+def default_pending(day: date) -> bool:
+    """New entries on a future day are pending, like the app's pre-logged foods."""
+    return day > date.today()
+
+
 def meal_name(ctx: GObject) -> str:
     """The meal as accepted back by --meal: "lunch", "morning-snacks", ..."""
     meal, slot = entry_meal(ctx)
@@ -167,7 +172,7 @@ def summarize_daily_details(details: GObject, target_date: date) -> dict:
                         [4] Exercise([2] source/category name, [4] name),
                         [6] False for a tracker adjustment, [9] minutes
       FoodLogEntry: [0] FoodIdentifier([3] name, [4] brand, [9] food key),
-                    [1] FoodLogEntryContext([8] meal enum, [9] snack slot enum),
+                    [1] FoodLogEntryContext([5] pending, [8] meal enum, [9] snack slot enum),
                     [2] FoodServing([0] FoodNutrients([2] {FoodMeasurement: value}),
                                     [1] FoodServingSize([0] base servings, [2] unit, [5] amount)),
                     [6] entry key
@@ -190,10 +195,13 @@ def summarize_daily_details(details: GObject, target_date: date) -> dict:
             "category": ident.fields[1] or "",
             "meal": meal,
             "snack_slot": slot,
+            "pending": bool(ctx.fields[5]),
             "amount": round(serving.fields[1].fields[5], 2),
             "unit": measure_name(serving.fields[1].fields[2]),
             "calories": round(nutrients.get(_NUTRIENTS["calories"], 0.0), 1),
         })
+        if ctx.fields[5]:
+            continue   # pending (planned) entries don't count until confirmed
         for key, ordinal in _NUTRIENTS.items():
             totals[key] += nutrients.get(ordinal, 0.0)
 
@@ -654,13 +662,14 @@ class LoseItAPI:
         return {"food_id": food_id, "food": food, "size": size, "meal": meal,
                 "calories": calories, "notes": notes}
 
-    def _commit(self, plan: dict, target_date: date) -> dict:
+    def _commit(self, plan: dict, target_date: date, pending: bool = False) -> dict:
         food = plan["food"]
         entry = self.call("getUnsavedFoodLogEntry", self.token(), self.key(plan["food_id"]), None,
                           food.fields[0].fields[3])
         ctx = entry.fields[1]
         ctx.fields[1] = self.day_date(target_date)
         ctx.fields[4] = -1
+        ctx.fields[5] = pending
         self._set_meal(ctx, plan["meal"])
         self._apply_serving(entry, plan["size"])
         self._save_entry(entry)
@@ -668,12 +677,13 @@ class LoseItAPI:
 
     def log_food(self, food_id: str, amount: float | None = None, unit: str | None = None,
                  servings: float | None = None, meal_type: str = "breakfast",
-                 target_date: date | None = None) -> dict:
+                 target_date: date | None = None, pending: bool | None = None) -> dict:
         """Log one food the way the web app does: getFood (serving options),
         getUnsavedFoodLogEntry (server-prefilled entry with a fresh key), set
         day/meal/serving, updateFoodLogEntry."""
         plan = self._plan(self.resolve_food_id(food_id), amount, unit, servings, meal_type)
-        return self._commit(plan, target_date or date.today())
+        day = target_date or date.today()
+        return self._commit(plan, day, default_pending(day) if pending is None else pending)
 
     def plan_items(self, items: list[Item], meal: str | None, target_date: date) -> list[dict]:
         """Resolve, size and validate every item before anything is written."""
@@ -708,17 +718,22 @@ class LoseItAPI:
             out["notes"] = plan["notes"]
         return out
 
-    def log_items(self, items: list[Item], meal: str | None, target_date: date) -> dict:
+    def log_items(self, items: list[Item], meal: str | None, target_date: date,
+                  pending: bool | None = None) -> dict:
         """Log several quick-log items, then return them with the day's totals.
 
         All items are planned first, so a bad item fails before anything is
         logged. If a write fails midway, PartialLogError carries what was logged.
+        Entries on a future day are pending (planned, not counted) unless
+        `pending` says otherwise, like the app's pre-logging.
         """
+        if pending is None:
+            pending = default_pending(target_date)
         plans = self.plan_items(items, meal, target_date)
         logged = []
         for plan in plans:
             try:
-                result = self._commit(plan, target_date)
+                result = self._commit(plan, target_date, pending)
             except Exception as e:
                 raise PartialLogError(logged, plan["input"], e) from e
             result.update(input=plan["input"], matched_by=plan["matched_by"])
@@ -786,6 +801,7 @@ class LoseItAPI:
                               entry.fields[0].fields[3])
             moved.fields[1].fields[1] = self.day_date(move_to)
             moved.fields[1].fields[4] = -1
+            moved.fields[1].fields[5] = default_pending(move_to)
             moved.fields[1].fields[8:10] = entry.fields[1].fields[8:10]
             moved.fields[2] = entry.fields[2]
             self._save_entry(moved)
@@ -817,7 +833,8 @@ class LoseItAPI:
         day = move_to or target_date
         plan = self._plan(choice["food_id"], *_size_args(choice["amount"], choice["unit"]),
                           meal or meal_name(entry.fields[1]))
-        result = self._commit(plan, day)
+        pending = default_pending(day) if move_to else bool(entry.fields[1].fields[5])
+        result = self._commit(plan, day, pending)
         self.call("deleteFoodLogEntry", self.token(), entry)
         result.update(status="replaced", matched_by=choice["source"],
                       replaced={"entry_id": key_to_hex(entry.fields[6]), "name": entry.fields[0].fields[3]})
@@ -868,6 +885,7 @@ class LoseItAPI:
                             e.fields[0].fields[3])
             new.fields[1].fields[1] = self.day_date(to_date)
             new.fields[1].fields[4] = -1
+            new.fields[1].fields[5] = default_pending(to_date)
             new.fields[1].fields[8:10] = e.fields[1].fields[8:10]
             if to_meal:
                 self._set_meal(new.fields[1], to_meal)
@@ -960,6 +978,7 @@ def _entry_result(entry: GObject, day: date, food_id: str) -> dict:
         "calories": round(totals.get(0, 0.0), 1),
         "meal": meal,
         "snack_slot": slot,
+        "pending": bool(entry.fields[1].fields[5]),
         "date": day.isoformat(),
     }
 
