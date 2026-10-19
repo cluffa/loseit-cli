@@ -196,8 +196,9 @@ def _meal(value):
 
 
 def _where(e: dict) -> str:
-    """An entry's meal for display: "lunch", "morning-snacks", ..."""
-    return f"{e['snack_slot']}-snacks" if e.get("snack_slot") else e["meal"]
+    """An entry's meal for display: "lunch", "morning-snacks", ..., marked if pending."""
+    where = f"{e['snack_slot']}-snacks" if e.get("snack_slot") else e["meal"]
+    return f"{where}, pending" if e.get("pending") else where
 
 
 @click.group(help=AGENT_HELP)
@@ -440,11 +441,14 @@ def weight(days: int, as_json: bool):
 @click.option("--amount", type=float, default=None, help="Amount in --unit (single item)")
 @click.option("--unit", default=None, help="Unit: g, oz, cup, ml, serving, ... (single item)")
 @click.option("--servings", type=float, default=None, help="Number of default servings (single item)")
+@click.option("--pending/--counted", default=None,
+              help="Pending entries are planned, not counted until confirmed in the app "
+                   "[default: pending on future days]")
 @click.option("--dry-run", is_flag=True, help="Show which foods would be logged, without logging")
 @json_option
 @cli_error_handler
 def log(items: tuple[str, ...], meal: str | None, target_date: str | None, amount: float | None,
-        unit: str | None, servings: float | None, dry_run: bool, as_json: bool):
+        unit: str | None, servings: float | None, pending: bool | None, dry_run: bool, as_json: bool):
     """Log one or more foods in one call.
 
     \b
@@ -454,6 +458,7 @@ def log(items: tuple[str, ...], meal: str | None, target_date: str | None, amoun
       loseit log "lunch: 150g chicken breast" "dinner: 1 cup rice"
       loseit log 1bc020d4 --amount 150 --unit g
       loseit log "1 can cola ~140cal" --date yesterday
+      loseit log "lunch: salad" --date tomorrow    pending until confirmed in the app
     """
     from loseit.client.api import LoseItAPI
     from loseit.client.parse import parse_item
@@ -472,12 +477,14 @@ def log(items: tuple[str, ...], meal: str | None, target_date: str | None, amoun
     day = _date(target_date)
     if dry_run:
         plans = [api.describe_plan(p) for p in api.plan_items(parsed, _meal(meal), day)]
-        emit({"would_log": plans, "date": day.isoformat()}, as_json,
+        from loseit.client.api import default_pending
+        emit({"would_log": plans, "date": day.isoformat(),
+              "pending": default_pending(day) if pending is None else pending}, as_json,
              lambda d: [(click.echo(f"{x['input']} → {x['amount']:g} {x['unit']} {x['name']} — "
                                     f"{x['calories']:g} cal → {x['meal']} [{x['matched_by']}]"),
                          _human_notes(x)) for x in d["would_log"]])
         return
-    result = api.log_items(parsed, _meal(meal), day)
+    result = api.log_items(parsed, _meal(meal), day, pending)
 
     def human(r):
         for e in r["logged"]:

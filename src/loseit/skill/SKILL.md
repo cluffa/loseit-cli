@@ -26,11 +26,12 @@ loseit log --date yesterday \
 - **No amount:** a recent food is logged at the amount the user used last time.
 - **Count units** (`can`, `bottle`, `each`, `slice`): these map onto the best match's own unit ("1 Serving"), with a note. They never pull in a different product. If nothing comes in that unit, the error lists the matches and their units; retry with a weight (`5 oz tuna`) or a calorie hint.
 - **Meal:** if no meal is given, today's items are placed by time of day, and other days use the food's usual meal. Snacks have slots: `early-snacks`, `morning-snacks`, `afternoon-snacks`, `late-snacks` (as a prefix or `--meal`); plain `snacks` leaves the slot as it is, and as a filter it matches every slot. After midnight, "dinner" usually means yesterday, so pass `--date yesterday`.
+- **Planning ahead:** entries on a future date are *pending*, like the app's pre-logged foods: listed, but not counted in totals until the user confirms them in the app. `--counted` overrides; `--pending` makes a today/past entry pending.
 - **Preview:** `--dry-run` shows what would be logged without writing anything.
 
 ## Reading the result
 
-Each item in `logged` has `name`, `amount`, `unit`, `calories`, `meal`, `snack_slot` (`early`/`morning`/`afternoon`/`late` for snacks, else null) and `entry_id`. It may also have:
+Each item in `logged` has `name`, `amount`, `unit`, `calories`, `meal`, `snack_slot` (`early`/`morning`/`afternoon`/`late` for snacks, else null), `pending` and `entry_id`. In `summary`, pending foods are listed but left out of the totals. It may also have:
 
 - `notes`: a unit was swapped, the hint didn't match, or the entry is unusually large. Mention these to the user.
 - `alternatives`: other candidates, with `calories` and `food_id`.
