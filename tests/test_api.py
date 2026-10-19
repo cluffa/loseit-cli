@@ -1,7 +1,7 @@
 """API client against a fake LoseIt server built from recorded fixtures."""
 import copy
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
@@ -265,6 +265,39 @@ class TestSnackSlots:
     def test_bad_meal(self, api):
         with pytest.raises(ValueError, match="Meal must be one of"):
             api.log_items([parse_item("94bc756214614b11bdfe5f9e6463e334")], "brunch-snacks", DAY)
+
+
+
+class TestPending:
+    PIE = "94bc756214614b11bdfe5f9e6463e334"
+
+    def test_future_day_is_pending(self, api):
+        out = api.log_items([parse_item(self.PIE)], "lunch", date.today() + timedelta(days=1))
+        assert api.fake.saved()[0].fields[1].fields[5] is True
+        assert out["logged"][0]["pending"] is True
+
+    def test_today_and_past_count(self, api):
+        api.log_items([parse_item(self.PIE)], "lunch", date.today())
+        api.log_items([parse_item(self.PIE)], "lunch", DAY)
+        assert [e.fields[1].fields[5] for e in api.fake.saved()] == [False, False]
+
+    def test_override(self, api):
+        api.log_items([parse_item(self.PIE)], "lunch", date.today() + timedelta(days=1), pending=False)
+        api.log_items([parse_item(self.PIE)], "lunch", DAY, pending=True)
+        assert [e.fields[1].fields[5] for e in api.fake.saved()] == [False, True]
+
+    def test_summary_flags_pending_and_leaves_it_out_of_macros(self, day_details):
+        before = summarize_daily_details(day_details, DAY)["nutrients"]["protein_g"]
+        day_details.fields[5].fields[0][1].fields[1].fields[5] = True
+        s = summarize_daily_details(day_details, DAY)
+        assert [f["pending"] for f in s["foods"]] == [False, True]
+        assert s["nutrients"]["protein_g"] == pytest.approx(before / 2, abs=0.1)
+
+    def test_copy_and_move_to_future_are_pending(self, api, day_details):
+        future = date.today() + timedelta(days=2)
+        api.copy_entries(DAY, future, meal="dinner")
+        api.edit_entry(key_to_hex(day_details.fields[5].fields[0][0].fields[6]), DAY, move_to=future)
+        assert [e.fields[1].fields[5] for e in api.fake.saved()] == [True, True]
 
 
 def make_food(api, food_id: str, name: str, calories: float, measure: int = 5):
