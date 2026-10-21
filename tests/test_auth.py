@@ -2,6 +2,7 @@
 import base64
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 import pytest
@@ -144,6 +145,8 @@ def make_jwt(exp: datetime) -> str:
 
 
 NOW = datetime.now(timezone.utc)
+FIXTURES = Path(__file__).parent / "fixtures"
+MARKETING_PAGE = "<!DOCTYPE html><html><head><title>Lose It! - Weight Loss That Fits</title></head></html>"
 AUTH_EXCEPTION = ('//EX[2,1,["com.loseit.core.client.service.'
                   'UserAuthenticationFailedException/1234567890",""],0,7]')
 
@@ -180,37 +183,45 @@ class TestCookieAndPasswordLogin:
         with pytest.raises(RuntimeError, match="liauth"):
             AuthManager().login_from_cookies("_ga=1")
 
-    def test_password_login_saves_cookies_and_refresh_token(self, isolated_session):
+    def test_real_login_response_yields_working_session(self, isolated_session):
+        """Regression: real success shape (tokens only in Set-Cookie, no refresh
+        token) and "/" serving a cached marketing page while /index.jsp is the app."""
         from loseit.client.session import SessionStore
+
+        fx = json.loads((FIXTURES / "account_login_success.json").read_text())
         token = make_jwt(NOW + timedelta(days=14))
         seen = {}
 
         def handler(request):
             if request.url.host == "api.loseit.com":
                 seen["form"] = dict(httpx.QueryParams(request.content.decode()))
-                return httpx.Response(200, json={"user_id": 9, "refresh_token": "r1"},
-                                      headers={"set-cookie": f"liauth={token}; Domain=loseit.com"})
+                headers = [("set-cookie", c.replace("{TOKEN}", token)) for c in fx["set_cookie"]]
+                return httpx.Response(fx["status"], json=fx["body"], headers=headers)
             if request.url.host == "www.loseit.com":
+                if request.url.path != "/index.jsp":
+                    return httpx.Response(200, text=MARKETING_PAGE)
                 seen["cookie"] = request.headers["cookie"]
-            return httpx.Response(200, text=make_page(9, "eve"))
+                return httpx.Response(200, text=make_page(12345678, "Alex"), headers=[
+                    ("set-cookie", "JSESSIONID=j1; Path=/; Secure; HttpOnly"),
+                    ("set-cookie", "liwebconfig=w1; Path=/")])
+            return httpx.Response(404)
 
-        manager_with(handler).login_with_password("eve@example.com", "pw")
-        assert seen["form"] == {"username": "eve@example.com", "password": "pw",
+        session = manager_with(handler).login_with_password("user@example.com", "pw")
+        assert seen["form"] == {"username": "user@example.com", "password": "pw",
                                 "grant_type": "password"}
-        assert f"liauth={token}" in seen["cookie"]
+        assert f"liauth={token}" in seen["cookie"] and f"fn_auth={token}" in seen["cookie"]
+        assert (session.user_id, session.username) == (12345678, "Alex")
         saved = SessionStore.load()
-        assert saved.refresh_token == "r1" and saved.expires_at() is not None
+        assert saved.cookies["liauth"] == token and saved.cookies["JSESSIONID"] == "j1"
+        assert saved.refresh_token == ""
+        assert saved.expires_at() is not None
 
-    def test_password_login_uses_access_token_from_body(self, isolated_session):
-        from loseit.client.session import SessionStore
-
-        def handler(request):
-            if request.url.host == "api.loseit.com":
-                return httpx.Response(200, json={"access_token": "a1"})
-            return httpx.Response(200, text=make_page(9, "eve"))
-
-        manager_with(handler).login_with_password("eve@example.com", "pw")
-        assert SessionStore.load().cookies["liauth"] == "a1"
+    def test_marketing_page_is_not_a_login(self, isolated_session):
+        """The cached "/" page has no user data; validation must not rely on it."""
+        assert auth_mod.WEB_APP_URL.endswith("/index.jsp")
+        mgr = manager_with(lambda r: httpx.Response(200, text=MARKETING_PAGE))
+        with pytest.raises(RuntimeError, match="not logged in"):
+            mgr.login_from_cookies("liauth=t")
 
     def test_password_login_unknown_account(self, isolated_session):
         mgr = manager_with(lambda r: httpx.Response(

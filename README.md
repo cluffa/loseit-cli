@@ -60,7 +60,7 @@ On a headless machine you can also log in directly:
 - `LOSEIT_EMAIL=... LOSEIT_PASSWORD=... loseit login --password` logs in over HTTP, with no browser. In a terminal it prompts for anything missing. It never takes the password as an argument.
 - `loseit login --cookies FILE` (or `-` for stdin) imports www.loseit.com cookies exported from a logged-in browser: a Playwright/CDP JSON list, `storage_state` JSON, `cookies.txt`, or a `Cookie:` header. The export must include the HttpOnly `liauth` cookie.
 
-A login lasts 14 days. The `liauth` cookie is a JWT with a fixed expiry that use doesn't extend. A password login also stores a refresh token, and the CLI uses it to renew the session automatically when it gets within 2 days of expiry. An expired or rejected session exits with code 3 and tells you how to log in again.
+A login lasts 14 days. The `liauth` cookie is a JWT with a fixed expiry that use doesn't extend. LoseIt returns no refresh token, so you log in again when the session runs out. With `--password` that's one non-interactive command. (If a login ever does return a refresh token, the CLI stores it and renews the session within 2 days of expiry.) An expired or rejected session exits with code 3 and tells you how to log in again.
 
 ## Usage
 
