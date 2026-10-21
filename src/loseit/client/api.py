@@ -111,6 +111,10 @@ class LoseItError(RuntimeError):
     """The LoseIt server returned an exception."""
 
 
+class SessionExpiredError(LoseItError):
+    """LoseIt no longer accepts the saved session; a new login is needed."""
+
+
 class PartialLogError(RuntimeError):
     """A multi-item log failed partway; `logged` lists what was saved."""
 
@@ -329,6 +333,9 @@ class LoseItAPI:
         self._schema: dict | None = None
         self._foods: dict[str, GObject | None] = {}   # getFood results by id
 
+    def session_age_days(self) -> float | None:
+        return self._session.age_days()
+
     # schema
     @property
     def schema(self) -> dict:
@@ -365,6 +372,13 @@ class LoseItAPI:
         resp.raise_for_status()
         text = resp.text
         if text.startswith("//EX"):
+            if "UserAuthenticationFailedException" in text:
+                age = self._session.age_days()
+                since = f" (saved {age:.1f} days ago)" if age is not None else ""
+                raise SessionExpiredError(
+                    f"LoseIt no longer accepts the saved session{since}. Run 'loseit login "
+                    "--refresh' (no window; works while the login browser profile is still "
+                    "signed in), or 'loseit login' to sign in again.")
             raise LoseItError(_exception_message(text, method))
         if not text.startswith("//OK"):
             raise RuntimeError(f"Unexpected response from {method}: {text[:120]}")

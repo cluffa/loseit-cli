@@ -71,12 +71,13 @@ def read_browser_cookies(browser: str) -> dict[str, str]:
     return {c.name: c.value for c in jar if c.domain in _WWW_COOKIE_DOMAINS}
 
 
-def capture_cookies_via_window(timeout_s: int = 300) -> dict[str, str]:
+def capture_cookies_via_window(timeout_s: int = 300, headless: bool = False) -> dict[str, str]:
     """Open a browser window, let the user log in, and return www.loseit.com cookies.
 
     Uses the installed Google Chrome (falling back to Playwright's Chromium) with
     a dedicated profile under ~/.config/loseit, so the user's own browser data is
-    never read and "remember me" persists between logins.
+    never read and "remember me" persists between logins. With headless=True no
+    window opens: it only succeeds if that profile is still signed in.
     """
     from playwright.sync_api import sync_playwright, Error as PlaywrightError
 
@@ -88,10 +89,10 @@ def capture_cookies_via_window(timeout_s: int = 300) -> dict[str, str]:
 
     with sync_playwright() as p:
         try:
-            ctx = p.chromium.launch_persistent_context(str(profile_dir), channel="chrome", headless=False)
+            ctx = p.chromium.launch_persistent_context(str(profile_dir), channel="chrome", headless=headless)
         except PlaywrightError:
             try:
-                ctx = p.chromium.launch_persistent_context(str(profile_dir), headless=False)
+                ctx = p.chromium.launch_persistent_context(str(profile_dir), headless=headless)
             except PlaywrightError as e:
                 raise RuntimeError(
                     "Could not start a browser. Install Google Chrome, or run "
@@ -100,6 +101,9 @@ def capture_cookies_via_window(timeout_s: int = 300) -> dict[str, str]:
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.goto(WEB_HOME_URL)
+            if not logged_in(page.url) and headless:
+                raise RuntimeError("The login browser profile is signed out. "
+                                   "Run 'loseit login' to sign in again.")
             if not logged_in(page.url):
                 print("Log in to LoseIt in the browser window that just opened...")
                 try:
@@ -129,6 +133,18 @@ class AuthManager:
         except Exception as e:
             raise RuntimeError(f"Browser login failed: {e}") from e
         return self._save_cookie_session(cookies, source="browser window")
+
+    def refresh(self) -> Session:
+        """Renew the session from the login window's profile, without showing a window."""
+        if not (SESSION_DIR / "browser-profile").exists():
+            raise RuntimeError("No saved login browser profile. Run 'loseit login' to sign in.")
+        try:
+            cookies = capture_cookies_via_window(timeout_s=30, headless=True)
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Session refresh failed: {e}") from e
+        return self._save_cookie_session(cookies, source="saved browser profile")
 
     def login_from_browser(self, browser: str = "chrome") -> Session:
         """Import the LoseIt session from a browser where the user is logged in."""

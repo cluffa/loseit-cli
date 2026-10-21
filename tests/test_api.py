@@ -300,6 +300,26 @@ class TestPending:
         assert [e.fields[1].fields[5] for e in api.fake.saved()] == [True, True]
 
 
+
+AUTH_FAILED = ('//EX[2,1,["com.loseit.core.client.service.UserAuthenticationFailedException/1234567890"],0,7]')
+
+
+class TestExpiredSession:
+    def test_auth_failure_is_session_expired(self, api):
+        from loseit.client.api import SessionExpiredError
+        api._client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=AUTH_FAILED)))
+        with pytest.raises(SessionExpiredError, match="days ago.*loseit login --refresh"):
+            api.call("getFood", api.token(), api.key("94bc756214614b11bdfe5f9e6463e334"), None)
+
+    def test_other_exceptions_stay_rejected(self, api):
+        from loseit.client.api import LoseItError, SessionExpiredError
+        other = AUTH_FAILED.replace("UserAuthenticationFailedException", "IllegalArgumentException")
+        api._client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=other)))
+        with pytest.raises(LoseItError) as e:
+            api.call("getFood", api.token(), api.key("94bc756214614b11bdfe5f9e6463e334"), None)
+        assert not isinstance(e.value, SessionExpiredError)
+
+
 def make_food(api, food_id: str, name: str, calories: float, measure: int = 5):
     """A getFood result like the recorded pie, with another id/name/calories/unit."""
     food = copy.deepcopy(decode("getFood_response_01.txt"))

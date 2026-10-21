@@ -177,3 +177,25 @@ class TestCompletion:
         from loseit.cli.main import main
         out = runner.invoke(main, ["completion", "zsh"]).output
         assert "compinit" in out and "_LOSEIT_COMPLETE" in out
+
+
+class TestExpiredSession:
+    def test_expired_session_exits_auth(self, runner, monkeypatch):
+        from loseit.cli.main import EXIT_AUTH, main
+        from loseit.client.api import LoseItAPI, SessionExpiredError
+        from loseit.client.session import Session, SessionStore
+        SessionStore.save(Session(user_id=1, cookies={"liauth": "x"}))
+
+        def expired(self, d=None):
+            raise SessionExpiredError("LoseIt no longer accepts the saved session.")
+        monkeypatch.setattr(LoseItAPI, "get_daily_summary", expired)
+        result = runner.invoke(main, ["status", "--json"])
+        assert result.exit_code == EXIT_AUTH
+        assert json.loads(result.output)["error"]["type"] == "auth"
+
+    def test_refresh_without_profile_exits_auth(self, runner, tmp_path, monkeypatch):
+        from loseit.cli.main import EXIT_AUTH, main
+        monkeypatch.setattr("loseit.client.auth.SESSION_DIR", tmp_path)
+        result = runner.invoke(main, ["login", "--refresh"])
+        assert result.exit_code == EXIT_AUTH
+        assert "loseit login" in result.output

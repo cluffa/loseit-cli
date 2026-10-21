@@ -79,7 +79,7 @@ def cli_error_handler(func):
     """Map exceptions to clear messages and exit codes."""
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        from loseit.client.api import LoseItError, PartialLogError
+        from loseit.client.api import LoseItError, PartialLogError, SessionExpiredError
         as_json = kwargs.get("as_json", False)
         try:
             return func(*args, **kwargs)
@@ -92,6 +92,8 @@ def cli_error_handler(func):
                     click.echo(f"✓ {x['amount']:g} {x['unit']} {x['name']} → {_where(x)} ({x['entry_id'][:8]})")
                 click.echo(f"Error: {e}", err=True)
             raise SystemExit(EXIT_ERROR)
+        except SessionExpiredError as e:
+            fail(str(e), EXIT_AUTH, "auth", as_json)
         except LoseItError as e:
             fail(str(e), EXIT_REJECTED, "rejected", as_json)
         except LookupError as e:
@@ -220,8 +222,11 @@ def main():
               help="Print the saved session as one line (for LOSEIT_SESSION on another machine)")
 @click.option("--import", "import_blob", default=None, metavar="STRING",
               help="Save a session from an --export string ('-' reads stdin)")
-def login(browser: str | None, do_export: bool, import_blob: str | None):
-    """Log in through a pop-up browser window (or import/export a session)."""
+@click.option("--refresh", is_flag=True,
+              help="Renew an expired session without a window, if the login profile is still "
+                   "signed in (an agent can run this)")
+def login(browser: str | None, do_export: bool, import_blob: str | None, refresh: bool):
+    """Log in through a pop-up browser window (or import/export/refresh a session)."""
     from loseit.client.auth import AuthManager
     from loseit.client.session import Session, SessionStore
 
@@ -247,7 +252,9 @@ def login(browser: str | None, do_export: bool, import_blob: str | None):
 
     auth = AuthManager()
     try:
-        if browser:
+        if refresh:
+            auth.refresh()
+        elif browser:
             auth.login_from_browser(browser)
         else:
             auth.login_with_window()
@@ -322,9 +329,17 @@ def status(target_date: str | None, as_json: bool):
     from loseit.client.api import LoseItAPI
     from loseit.cli.formatting import print_status
 
-    summary = LoseItAPI().get_daily_summary(_date(target_date))
+    api = LoseItAPI()
+    summary = api.get_daily_summary(_date(target_date))
     data = {k: v for k, v in summary.items() if k not in ("foods", "exercises")}
-    emit(data, as_json, lambda d: print_status(summary))
+    age = api.session_age_days()
+    data["session_age_days"] = round(age, 1) if age is not None else None
+
+    def human(d):
+        print_status(summary)
+        if age is not None:
+            click.echo(f"Session: saved {age:.1f} days ago (LoseIt has expired them after ~5 days)")
+    emit(data, as_json, human)
 
 
 @main.command()

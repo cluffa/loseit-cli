@@ -7,7 +7,7 @@ description: Log foods and check calories in the user's Lose It! (LoseIt.com) fo
 
 The `loseit` CLI reads and writes the user's Lose It! diary. When it's piped, output is JSON. Errors go to stderr as `{"error": {"type", "message"}}` with these exit codes: 2 invalid, 3 not logged in, 4 not found or ambiguous, 5 rejected by LoseIt, 6 network. Dates are `today|yesterday|tomorrow|±N|YYYY-MM-DD`.
 
-**Setup check:** if a command exits 3, ask the user to run `loseit login` in a terminal. It opens a browser window; you can't do it for them.
+**Setup check:** if a command exits 3 (not logged in, or the saved session expired; LoseIt has expired them after about 5 days), run `loseit login --refresh` once. It renews the session without a window while the login browser profile is still signed in. If that also exits 3, ask the user to run `loseit login` in a terminal. It opens a browser window; you can't do it for them.
 
 ## Logging
 
