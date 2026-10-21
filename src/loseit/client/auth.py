@@ -11,6 +11,9 @@ import httpx
 from .session import AUTH_COOKIES, SESSION_DIR, Session, SessionStore
 
 WEB_HOME_URL = "https://www.loseit.com/"
+# The web app itself. "/" is an edge-cached marketing page whatever the cookies
+# are, so session checks must load the app page, which embeds the user.
+WEB_APP_URL = "https://www.loseit.com/index.jsp"
 API_LOGIN_URL = "https://api.loseit.com/account/login"
 USER_ID_TYPE = "com.loseit.core.client.model.UserId/4281239478"
 SUPPORTED_BROWSERS = ("chrome", "brave", "edge", "firefox", "safari")
@@ -295,7 +298,7 @@ class AuthManager:
                              refresh_token: str = "") -> Session:
         """Validate cookies against www.loseit.com, then save them as the session."""
         cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
-        resp = self._client.get(WEB_HOME_URL, headers={"Cookie": cookie_header},
+        resp = self._client.get(WEB_APP_URL, headers={"Cookie": cookie_header},
                                 follow_redirects=False)
         if resp.is_redirect or resp.status_code != 200:
             raise RuntimeError(
