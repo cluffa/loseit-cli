@@ -79,7 +79,7 @@ def cli_error_handler(func):
     """Map exceptions to clear messages and exit codes."""
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        from loseit.client.api import LoseItError, PartialLogError
+        from loseit.client.api import LoseItAuthError, LoseItError, PartialLogError
         as_json = kwargs.get("as_json", False)
         try:
             return func(*args, **kwargs)
@@ -92,6 +92,8 @@ def cli_error_handler(func):
                     click.echo(f"✓ {x['amount']:g} {x['unit']} {x['name']} → {_where(x)} ({x['entry_id'][:8]})")
                 click.echo(f"Error: {e}", err=True)
             raise SystemExit(EXIT_ERROR)
+        except LoseItAuthError as e:
+            fail(str(e), EXIT_AUTH, "auth", as_json)
         except LoseItError as e:
             fail(str(e), EXIT_REJECTED, "rejected", as_json)
         except LookupError as e:
@@ -104,7 +106,8 @@ def cli_error_handler(func):
             fail(str(e), EXIT_ERROR, "error", as_json)
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (401, 403):
-                fail("Session expired. Run 'loseit login' to re-authenticate.", EXIT_AUTH, "auth", as_json)
+                fail("Session expired. Run 'loseit login' (or 'loseit login --password' on a "
+                 "headless machine) to re-authenticate.", EXIT_AUTH, "auth", as_json)
             fail(f"LoseIt API error (HTTP {e.response.status_code})", EXIT_ERROR, "http", as_json)
         except httpx.RequestError as e:
             fail(f"Connection error: {e}", EXIT_NETWORK, "network", as_json)
@@ -220,8 +223,15 @@ def main():
               help="Print the saved session as one line (for LOSEIT_SESSION on another machine)")
 @click.option("--import", "import_blob", default=None, metavar="STRING",
               help="Save a session from an --export string ('-' reads stdin)")
-def login(browser: str | None, do_export: bool, import_blob: str | None):
-    """Log in through a pop-up browser window (or import/export a session)."""
+@click.option("--password", "use_password", is_flag=True,
+              help="Log in headlessly with email and password from LOSEIT_EMAIL / "
+                   "LOSEIT_PASSWORD (prompts when missing and a terminal is attached)")
+@click.option("--cookies", "cookie_file", default=None, metavar="FILE",
+              help="Save a session from www.loseit.com cookies exported from a logged-in "
+                   "browser: JSON, cookies.txt or a Cookie header ('-' reads stdin)")
+def login(browser: str | None, do_export: bool, import_blob: str | None,
+          use_password: bool, cookie_file: str | None):
+    """Log in through a pop-up browser window (or headlessly, or import/export a session)."""
     from loseit.client.auth import AuthManager
     from loseit.client.session import Session, SessionStore
 
@@ -247,11 +257,26 @@ def login(browser: str | None, do_export: bool, import_blob: str | None):
 
     auth = AuthManager()
     try:
-        if browser:
+        if cookie_file:
+            with click.open_file(cookie_file) as stream:
+                auth.login_from_cookies(stream.read())
+        elif use_password:
+            interactive = sys.stdin.isatty()
+            email = os.environ.get("LOSEIT_EMAIL") or (
+                click.prompt("LoseIt email", err=True) if interactive else "")
+            password = os.environ.get("LOSEIT_PASSWORD") or (
+                click.prompt("LoseIt password", hide_input=True, err=True) if interactive else "")
+            if not (email and password):
+                fail("Set LOSEIT_EMAIL and LOSEIT_PASSWORD (or run in a terminal to be prompted).",
+                     EXIT_USAGE, "invalid")
+            auth.login_with_password(email, password)
+        elif browser:
             auth.login_from_browser(browser)
         else:
             auth.login_with_window()
-    except RuntimeError as e:
+    except OSError as e:
+        fail(f"Could not read cookies: {e}", EXIT_USAGE, "invalid")
+    except (RuntimeError, ValueError) as e:
         fail(str(e), EXIT_AUTH, "auth")
 
 

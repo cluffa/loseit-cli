@@ -55,6 +55,13 @@ The skill teaches the agent the workflow: log everything in one call, pass calor
 
 For an agent on another machine (headless), run `loseit login --export` where you're logged in, then on the other machine set `LOSEIT_SESSION=<that string>` or run `loseit login --import -`.
 
+On a headless machine you can also log in directly:
+
+- `LOSEIT_EMAIL=... LOSEIT_PASSWORD=... loseit login --password` logs in over HTTP, with no browser. In a terminal it prompts for anything missing. It never takes the password as an argument.
+- `loseit login --cookies FILE` (or `-` for stdin) imports www.loseit.com cookies exported from a logged-in browser: a Playwright/CDP JSON list, `storage_state` JSON, `cookies.txt`, or a `Cookie:` header. The export must include the HttpOnly `liauth` cookie.
+
+A login lasts 14 days. The `liauth` cookie is a JWT with a fixed expiry that use doesn't extend. LoseIt returns no refresh token, so you log in again when the session runs out. With `--password` that's one non-interactive command. (If a login ever does return a refresh token, the CLI stores it and renews the session within 2 days of expiry.) An expired or rejected session exits with code 3 and tells you how to log in again.
+
 ## Usage
 
 ```bash
@@ -75,7 +82,7 @@ Dates are `today`, `yesterday`, `tomorrow`, `±N` or `YYYY-MM-DD`. Foods resolve
 
 LoseIt's web app talks to `https://www.loseit.com/web/service` using GWT-RPC, a positional serialization format whose field layouts live only in the app's compiled JavaScript. This client:
 
-1. **Logs in** through a real Chrome window (Playwright). LoseIt's login uses reCAPTCHA Enterprise, so headless login isn't possible. It saves the session cookies plus the app's GWT permutation and policy hash to `~/.config/loseit/session.json`.
+1. **Logs in** through a real Chrome window (Playwright). The web login form adds a reCAPTCHA Enterprise token, but the login API also accepts a plain password grant, which `login --password` uses. It saves the session cookies plus the app's GWT permutation and policy hash to `~/.config/loseit/session.json`.
 2. **Extracts the protocol schema** from LoseIt's own JavaScript (`client/gwt_schema.py`). It downloads the permutation script and its deferred fragments, finds every type's serializer and deserializer functions, compiles them to a small op list, and reads method parameter types from the service proxy. The result is cached per app version and rebuilt automatically when LoseIt redeploys.
 3. **Encodes and decodes requests** with that schema. It round-trips recorded requests byte for byte, and the response decoder fails loudly if anything is left unread.
 4. **Logs food the way the web app does**: `getFood` (serving options), then `getUnsavedFoodLogEntry` (a server-prefilled entry), then set the day, meal and serving, then `updateFoodLogEntry`.
