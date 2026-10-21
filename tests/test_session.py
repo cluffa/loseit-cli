@@ -43,3 +43,20 @@ class TestSessionStore:
         loaded = SessionStore.load()
         assert loaded.username == "env"
         assert loaded.user_id == 2
+
+
+class TestSessionAge:
+    def test_age_days(self):
+        from datetime import datetime, timedelta, timezone
+        from loseit.client.session import Session
+        saved = datetime.now(timezone.utc) - timedelta(days=5, hours=12)
+        assert Session(created_at=saved.isoformat()).age_days() == pytest.approx(5.5, abs=0.01)
+        assert Session().age_days() is None
+
+    def test_imported_session_keeps_its_login_time(self):
+        from loseit.client.session import Session, SessionStore
+        SessionStore.save(Session(user_id=1, cookies={"a": "b"}, created_at="2026-10-15T12:00:00+00:00"))
+        assert SessionStore.load().created_at == "2026-10-15T12:00:00+00:00"
+        fresh = Session(user_id=1, cookies={"a": "b"})
+        SessionStore.save(fresh)
+        assert fresh.created_at and fresh.created_at != "2026-10-15T12:00:00+00:00"

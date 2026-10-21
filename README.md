@@ -55,6 +55,8 @@ The skill teaches the agent the workflow: log everything in one call, pass calor
 
 For an agent on another machine (headless), run `loseit login --export` where you're logged in, then on the other machine set `LOSEIT_SESSION=<that string>` or run `loseit login --import -`.
 
+Saved sessions expire: LoseIt has stopped accepting them after about 5 days. Commands then exit 3 with a message saying so, and `loseit status` shows the session's age. `loseit login --refresh` renews the session without opening a window, as long as the login window's browser profile is still signed in; otherwise run `loseit login` again.
+
 ## Usage
 
 ```bash

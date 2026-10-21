@@ -34,6 +34,16 @@ class Session:
     def is_valid(self) -> bool:
         return bool((self.token or self.cookies) and self.user_id > 0)
 
+    def age_days(self) -> float | None:
+        """Days since this session was saved (logged in), if known."""
+        try:
+            saved = datetime.fromisoformat(self.created_at)
+        except ValueError:
+            return None
+        if saved.tzinfo is None:
+            saved = saved.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - saved).total_seconds() / 86400
+
     def export(self) -> str:
         """Encode the session as a single-line string for copying elsewhere."""
         raw = json.dumps(asdict(self), separators=(",", ":")).encode()
@@ -75,8 +85,8 @@ class SessionStore:
 
     @staticmethod
     def save(session: Session):
-        """Save session to disk."""
-        session.created_at = datetime.now(timezone.utc).isoformat()
+        """Save session to disk. An imported session keeps its original login time."""
+        session.created_at = session.created_at or datetime.now(timezone.utc).isoformat()
         SESSION_DIR.mkdir(parents=True, exist_ok=True)
         SESSION_FILE.write_text(json.dumps(asdict(session), indent=2))
 
