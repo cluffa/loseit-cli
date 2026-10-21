@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 
 import httpx
 
@@ -20,7 +20,7 @@ from .gwt_schema import (
 )
 from .parse import Item, default_meal, normalize_words, parse_item, query_variants
 from .recent import REFRESH_DAYS, RecentFoods, _match_score, rank_search_results
-from .session import SessionStore
+from .session import AUTH_COOKIES, SessionStore
 
 
 def _hours_from_gmt() -> int:
@@ -103,12 +103,25 @@ _HEX_PREFIX = re.compile(r"^[0-9a-f]{4,32}$")
 # A single entry above this gets a "check the amount" note
 LARGE_ENTRY_CALORIES = 2000
 
+# Try a token refresh when the login cookie expires within this window
+SESSION_REFRESH_MARGIN = timedelta(days=2)
+
 # DayDate.day counts days from this epoch (day 9409 == 2026-10-05)
 DAY_EPOCH = date(2000, 12, 31)
 
 
 class LoseItError(RuntimeError):
     """The LoseIt server returned an exception."""
+
+
+class LoseItAuthError(LoseItError):
+    """The session is expired or rejected; the user must log in again."""
+
+    def __init__(self, reason: str):
+        super().__init__(
+            f"{reason} Log in again: 'loseit login --password' (LOSEIT_EMAIL/LOSEIT_PASSWORD), "
+            "'loseit login --cookies FILE' (cookies exported from a logged-in browser), "
+            "or 'loseit login' where a browser window can open.")
 
 
 class PartialLogError(RuntimeError):
@@ -317,6 +330,13 @@ class LoseItAPI:
         if not session or not session.is_valid():
             raise RuntimeError("Not authenticated. Run 'loseit login' first.")
         self._session = session
+        expires = session.expires_at()
+        if expires and expires - datetime.now(timezone.utc) < SESSION_REFRESH_MARGIN:
+            from .auth import refresh_session
+            with httpx.Client(timeout=30.0) as client:
+                refreshed = refresh_session(session, client)
+            if not refreshed and expires <= datetime.now(timezone.utc):
+                raise LoseItAuthError(f"LoseIt session expired {expires:%Y-%m-%d %H:%M} UTC.")
         headers = {
             "Content-Type": "text/x-gwt-rpc; charset=UTF-8",
             # GWT's RemoteServiceServlet rejects calls without the permutation header
@@ -355,11 +375,30 @@ class LoseItAPI:
         """
         try:
             return self._call(method, params, overload)
+        except LoseItAuthError:
+            if not self._refresh_login():
+                raise
         except LoseItError as e:
             if "IncompatibleRemoteServiceException" not in str(e):
                 raise
-        self._refresh_gwt_version()
+            self._refresh_gwt_version()
         return self._call(method, params, overload)
+
+    def _refresh_login(self) -> bool:
+        """Renew the login cookies after an auth rejection (needs a refresh token)."""
+        from .auth import refresh_session
+        if not refresh_session(self._session, self._client):
+            return False
+        self._client.cookies = httpx.Cookies(self._session.cookies)
+        return True
+
+    def _keep_rotated_cookies(self, resp: httpx.Response):
+        """Persist auth/session cookies the server re-issued, so a renewal isn't lost."""
+        changed = {k: v for k, v in resp.cookies.items()
+                   if k in (*AUTH_COOKIES, "JSESSIONID") and v and self._session.cookies.get(k) != v}
+        if changed:
+            self._session.cookies.update(changed)
+            SessionStore.save(self._session)
 
     def _refresh_gwt_version(self):
         """Re-discover the deployed GWT permutation after a LoseIt redeploy."""
@@ -393,9 +432,13 @@ class LoseItAPI:
                 if attempt == 2 or not idempotent:
                     raise
         resp.raise_for_status()
+        self._keep_rotated_cookies(resp)
         text = resp.text
         if text.startswith("//EX"):
-            raise LoseItError(_exception_message(text, method))
+            message = _exception_message(text, method)
+            if "UserAuthenticationFailedException" in message:
+                raise LoseItAuthError("LoseIt rejected the saved session (expired or signed out).")
+            raise LoseItError(message)
         if not text.startswith("//OK"):
             raise RuntimeError(f"Unexpected response from {method}: {text[:120]}")
         return ResponseDecoder(self.schema["types"]).decode(text).fields[3]

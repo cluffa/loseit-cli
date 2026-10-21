@@ -14,6 +14,20 @@ SESSION_DIR = Path.home() / ".config" / "loseit"
 SESSION_FILE = SESSION_DIR / "session.json"
 SESSION_ENV_VAR = "LOSEIT_SESSION"
 
+# Cookies that carry the login: both hold the same JWT, whose `exp` is the
+# session's hard expiry (14 days after login; it is not extended by use).
+AUTH_COOKIES = ("liauth", "fn_auth")
+
+
+def jwt_expiry(token: str) -> Optional[datetime]:
+    """Return a JWT's `exp` as an aware datetime, or None if it has none."""
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        return datetime.fromtimestamp(int(claims["exp"]), timezone.utc)
+    except (IndexError, KeyError, TypeError, ValueError):
+        return None
+
 
 @dataclass
 class Session:
@@ -27,12 +41,18 @@ class Session:
     token: str = ""
     cookies: dict[str, str] = field(default_factory=dict)
     service_request_token: str = ""
+    refresh_token: str = ""
     policy_hash: str = "108644F06370DEF41E9A7D9DFEDBBC80"
     gwt_base_url: str = "https://d3hsih69yn4d89.cloudfront.net/web/"
     gwt_permutation: str = "0740EF43D22FF4BC274288833AA500A3"
 
     def is_valid(self) -> bool:
         return bool((self.token or self.cookies) and self.user_id > 0)
+
+    def expires_at(self) -> Optional[datetime]:
+        """When the login cookie expires, or None if unknown."""
+        token = next((self.cookies[c] for c in AUTH_COOKIES if self.cookies.get(c)), "")
+        return jwt_expiry(token) if token else None
 
     def export(self) -> str:
         """Encode the session as a single-line string for copying elsewhere."""
