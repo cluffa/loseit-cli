@@ -97,6 +97,25 @@ def _matching_paren(s: str, open_idx: int) -> int:
     return j
 
 
+def _canonical_entry(body: str, name: str) -> str:
+    """Rewrite GWT's obfuscated entry/exit boilerplate to canonical names.
+
+    Every compiled function starts `var <vs>;ARR[IDX=++CNT]=<name>;` and ends
+    each exit path with `CNT=IDX-1`. GWT renames the ARR/CNT globals on every
+    compile (ATv/BTv, fQv/gQv, ...), so both are normalized here (the exit can
+    sit anywhere in the body, not just after the entry); downstream patterns
+    are written against the canonical ATv/BTv/c.
+    """
+    m = re.match(r"var ([\w$,]+);[\w$]+\[([\w$]+)=\+\+([\w$]+)\]=" +
+                 re.escape(name) + r";", body)
+    if not m:
+        return body
+    vs, idx, cnt = m.group(1), m.group(2), m.group(3)
+    rest = re.sub(rf"(?<![\w$]){re.escape(cnt)}={re.escape(idx)}-1(?![\w$])",
+                  "BTv=c-1", body[m.end():])
+    return f"var {vs};ATv[c=++BTv]={name};" + rest
+
+
 class _Compiler:
     def __init__(self, js: str):
         self.funcs = _function_bodies(js)
@@ -104,8 +123,22 @@ class _Compiler:
         self.write_prims = self._find_write_primitives()
 
     def _body_is(self, name: str, pattern: str) -> bool:
-        body = self.funcs[name][1]
+        body = _canonical_entry(self.funcs[name][1], name)
         return re.fullmatch(rf"var [\w$,]+;ATv\[[\w$]+=\+\+BTv\]={re.escape(name)};{pattern}", body) is not None
+
+    def _is_strref(self, name: str, params: list[str], body: str, strref_uses: set) -> bool:
+        """Whether a 2-param function is the string-table lookup.
+
+        GWT encodes a String as its index in the stream's string table, with
+        0 for null, so the lookup maps null -> 0 and is invoked as
+        ``F(stream, value)`` inside a ``''+F(...)`` append. Older
+        permutations were recognizable by an ``lm(table, value)`` call; newer
+        ones inline the map/list operations under fresh helper names, so
+        detect it by the null -> 0 behavior plus that use site instead of by
+        helper names.
+        """
+        return (name in strref_uses and
+                re.search(rf"if\({re.escape(params[1])}==null\)\{{[^}}]*return 0", body) is not None)
 
     def _find_read_primitives(self) -> dict[str, str]:
         prims = {}
@@ -121,7 +154,8 @@ class _Compiler:
                 elif re.match(rf"var a={r}\.b\[--{r}\.a\],c,d;", body):
                     prims[name] = LONG
             elif len(params) == 2 and re.fullmatch(
-                    rf"var c;ATv\[c=\+\+BTv\]={re.escape(name)};BTv=c-1;return a>0\?b\.d\[a-1\]:null", body):
+                    rf"var c;ATv\[c=\+\+BTv\]={re.escape(name)};BTv=c-1;return a>0\?b\.d\[a-1\]:null",
+                    _canonical_entry(body, name)):
                 prims[name] = STRING
         if STRING not in prims.values() or OBJECT not in prims.values():
             raise SchemaError("Could not identify GWT stream reader primitives")
@@ -129,6 +163,11 @@ class _Compiler:
 
     def _find_write_primitives(self) -> dict[str, str]:
         """Map writer functions to op kinds. 'raw' appends its argument verbatim."""
+        # Names invoked as F(stream, value) inside a ''+F(...) append: the
+        # string-table lookup is used this way by writeString wrappers.
+        strref_uses = set()
+        for _, (_, body) in self.funcs.items():
+            strref_uses.update(re.findall(r"''\+([\w$]+)\([\w$]+,[\w$]+\)", body))
         prims = {}
         for name, (params, body) in self.funcs.items():
             if len(params) != 2:
@@ -146,6 +185,8 @@ class _Compiler:
                 prims[name] = NUMBER
             elif "lm(a.i,b)" in body or re.search(r"lm\(a\.i,b\);c=a\.i\.a\.length", body):
                 prims[name] = "strref"
+            elif self._is_strref(name, params, body, strref_uses):
+                prims[name] = "strref"
         # writeString: fHd(a,''+<strref>(a,b))
         refs = [k for k, v in prims.items() if v == "strref"]
         for name, (params, body) in self.funcs.items():
@@ -153,6 +194,22 @@ class _Compiler:
                 for ref in refs:
                     if self._body_is(name, rf"[\w$]+\(a,''\+{re.escape(ref)}\(a,b\)\);BTv=c-1"):
                         prims[name] = STRING
+        # Structural fallback: a 2-param function whose whole body is a raw
+        # append of ''+F(a,b) for a 2-param F is itself a string writer
+        # (writeString), and F is the string-table reference. This catches
+        # permutations where the table lookup no longer matches any known
+        # helper-name pattern (see _is_strref).
+        for name, (params, body) in self.funcs.items():
+            if len(params) == 2 and name not in prims:
+                m = re.fullmatch(
+                    r"var [\w$,]+;ATv\[[\w$]+=\+\+BTv\]=" + re.escape(name) +
+                    r";([\w$]+)\(a,''\+([\w$]+)\(a,b\)\);BTv=c-1",
+                    _canonical_entry(body, name))
+                if m and prims.get(m.group(1)) == "raw":
+                    fparams, _ = self.funcs[m.group(2)]
+                    if len(fparams) == 2:
+                        prims[name] = STRING
+                        prims.setdefault(m.group(2), "strref")
         if OBJECT not in prims.values() or "raw" not in prims.values():
             raise SchemaError("Could not identify GWT stream writer primitives")
         return prims

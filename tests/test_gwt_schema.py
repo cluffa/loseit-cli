@@ -27,6 +27,20 @@ function fHd(a,b){var c;ATv[c=++BTv]=fHd;kHd(a.a,b);BTv=c-1}
 function VGd(a,b){var c;ATv[c=++BTv]=VGd;kHd(a.a,''+b);BTv=c-1}
 function SGd(a,b){var c,d,e;ATv[e=++BTv]=SGd;lm(a.i,b);c=a.i.a.length;return c}
 function XGd(a,b){var c;ATv[c=++BTv]=XGd;fHd(a,''+SGd(a,b));BTv=c-1}
+// New-shape string-table lookup (2026-11-14 permutation): no `lm(table, value)`
+// call — null maps to index 0 and the value is filed in the table inline.
+function SGd2(a,b){var c,d,e;ATv[e=++BTv]=SGd2;if(b==null){BTv=e-1;return 0}d=_O(hM(a.g,b),72);if(d){BTv=e-1;return d.a}em(a.i,b);c=a.i.a.length;kM(a.g,b,MEv(c));BTv=e-1;return c}
+function XGd2(a,b){var c;ATv[c=++BTv]=XGd2;fHd(a,''+SGd2(a,b));BTv=c-1}
+// Bare table-append lookup with no null check at all: only the wrapper shape
+// (a raw append of ''+F(a,b)) identifies the string writer.
+function SGd3(a,b){var c;ATv[c=++BTv]=SGd3;c=a.t.a.length;return c}
+function XGd3(a,b){var c;ATv[c=++BTv]=XGd3;fHd(a,''+SGd3(a,b));BTv=c-1}
+function inUser(a){var b,c;ATv[c=++BTv]=inUser;b=new X;BTv=c-1;return b}
+function deUser(a,b){var c;ATv[c=++BTv]=deUser;b.id=a.b[--a.a];YGd(a,a.b[--a.a]);b.n=a.b[--a.a];BTv=c-1}
+function serUser(a,b){var c;ATv[c=++BTv]=serUser;VGd(a,b.id);XGd2(a,b.name);VGd(a,b.n);BTv=c-1}
+function inName(a){var b,c;ATv[c=++BTv]=inName;b=new X;BTv=c-1;return b}
+function deName(a,b){var c;ATv[c=++BTv]=deName;YGd(a,a.b[--a.a]);BTv=c-1}
+function serName(a,b){var c;ATv[c=++BTv]=serName;XGd3(a,b.s);BTv=c-1}
 function QGd(a){var b;ATv[b=++BTv]=QGd;b=NGd(e,c>>28&15,false);return b}
 function base(a,b){var c;ATv[c=++BTv]=base;b.x=a.b[--a.a];BTv=c-1}
 function deChild(a,b){var c;ATv[c=++BTv]=deChild;set(b,YGd(a,a.b[--a.a]));b.y=_Gd(a);b.z=iP(RGd(a),5);base(a,b);BTv=c-1}
@@ -41,8 +55,8 @@ function deList(a,b){var c;ATv[c=++BTv]=deList;loopHelper(a,b);BTv=c-1}
 function serList(a,b){var c,d,e,f;ATv[f=++BTv]=serList;e=b.lc();kHd(a.a,''+e);for(d=b.Yb();d.ec();){c=d.fc();WGd(a,c)}BTv=f-1}
 function serDate(a,b){var c;ATv[c=++BTv]=serDate;fHd(a,QGd(b.$e()));BTv=c-1}
 function inList(a){return new L}
-var k1='com.x.Child/1',k2='com.x.Kind/2',k3='java.util.ArrayList/3',k4='java.util.Date/4',m1='doThing',t1='com.x.Token/9';
-function init(){a[k1]=[inChild,deChild,serChild];a[k2]=[inEnum,deEnum,serEnum];a[k3]=[inList,deList,serList];a[k4]=[undefined,undefined,serDate]}
+var k1='com.x.Child/1',k2='com.x.Kind/2',k3='java.util.ArrayList/3',k4='java.util.Date/4',k5='com.x.User/5',k6='com.x.Name/6',m1='doThing',t1='com.x.Token/9';
+function init(){a[k1]=[inChild,deChild,serChild];a[k2]=[inEnum,deEnum,serEnum];a[k3]=[inList,deList,serList];a[k4]=[undefined,undefined,serDate];a[k5]=[inUser,deUser,serUser];a[k6]=[inName,deName,serName]}
 function proxy(b,c,d){var g,h;g=new rHd(b,w8v,m1);try{h=qHd(g,kow,2);fHd(h,''+SGd(h,t1));fHd(h,''+SGd(h,'I'));WGd(h,c);pHd(g,d)}catch(a){}}
 """
 
@@ -58,6 +72,13 @@ class TestExtract:
         assert schema["java.util.ArrayList/3"]["ser"] == [["rep", ["o"]]]
         # write-only type: no reader, serializer writes a long
         assert schema["java.util.Date/4"] == {"inst": None, "de": None, "ser": ["l"], "enum": False}
+        # string-table lookup without the old `lm(table, value)` shape (null -> 0,
+        # inline map/list ops): the string field still serializes as "s"
+        assert schema["com.x.User/5"]["de"] == ["i", "s", "i"]
+        assert schema["com.x.User/5"]["ser"] == ["n", "s", "n"]
+        # lookup with no null check at all: only the wrapper shape identifies it
+        assert schema["com.x.Name/6"]["de"] == ["s"]
+        assert schema["com.x.Name/6"]["ser"] == ["s"]
 
     def test_methods(self):
         assert extract_methods(SYNTHETIC_JS) == {"doThing": [["com.x.Token/9", "I"]]}
