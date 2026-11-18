@@ -64,10 +64,10 @@ loseit copy --from yesterday --meal breakfast   # repeat a meal today
 
 ## Recipes
 
-- `loseit recipes [QUERY]` lists the user's recipes with servings and calories per serving; each has a `recipe_id` (which is also its food id).
-- `loseit recipe REF` shows one recipe (ingredients with amounts, instructions, per-serving nutrients). REF is a recipe name (best match; ambiguous names error and list candidates) or a recipe id prefix.
+- `loseit recipes [QUERY]` lists the user's recipes with servings, calories per serving, `current` and `created`; each has a `recipe_id` (which is also its food id). LoseIt keeps every version of a recipe on the server (each edit saves a new object), but like the app, the list defaults to current versions only. `--all` includes superseded/retired versions.
+- `loseit recipe REF` shows one recipe (ingredients with amounts, instructions, per-serving nutrients). REF is a recipe name (best match among current versions; ambiguous names error and list candidates) or a recipe id prefix — an id reaches any version, including retired ones (shown with `current: false`). A name that matches only retired versions errors and suggests `--all`, which resolves across all versions with current preferred.
 - `loseit recipe-create "NAME" --servings N [--instructions "..."] "INGREDIENT" ...` creates a recipe. Ingredients use the same text format and resolution as `log` items. New recipes are counted in Servings.
-- `loseit recipe-delete REF` deletes a recipe (no confirmation, like `delete`).
+- `loseit recipe-delete REF` deletes a recipe (no confirmation, like `delete`). Same resolution as `recipe`: current versions first, `--all` for retired-only names — a delete never silently picks a superseded version over a current one.
 - Logging a recipe: `loseit log <recipe food id> --servings 1` (or `--amount 40 --unit g` for gram-counted recipes). Recipe foods have no database entry of their own; the CLI sizes them from the recipe. Name resolution may prefer a same-named regular food from recents/search, so the id form is the reliable one.
 
 ## Caveats
