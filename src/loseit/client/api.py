@@ -8,8 +8,10 @@ they are used; they were verified against live data and the HAR fixtures.
 """
 from __future__ import annotations
 
+import copy
 import json
 import re
+import secrets
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta, timezone
 
@@ -289,6 +291,67 @@ def summarize_food(food: GObject) -> dict:
     }
 
 
+def recipe_ingredients(recipe: GObject) -> list:
+    """The RecipeIngredient list inside a Recipe (field [6] is the array)."""
+    wrapper = recipe.fields[6]
+    return wrapper.fields[0] if wrapper else []
+
+
+def summarize_recipe_ingredient(ingredient: GObject) -> dict:
+    """RecipeIngredient: [1] FoodIdentifier of the food, [2] FoodServing for
+    the amount used ([1] FoodServingSize: [5] amount, [2] unit)."""
+    ident, serving = ingredient.fields[1], ingredient.fields[2]
+    size = serving.fields[1]
+    return {
+        "food_id": key_to_hex(ident.fields[9]),
+        "name": ident.fields[3],
+        "brand": ident.fields[4] or "",
+        "amount": round(size.fields[5], 2),
+        "unit": measure_name(size.fields[2]),
+        "calories": round(entry_nutrients(serving).get(_NUTRIENTS["calories"], 0.0), 1),
+    }
+
+
+def summarize_recipe(recipe: GObject, ingredients: bool = True) -> dict:
+    """Turn a decoded Recipe into a summary dict.
+
+    Field positions (verified against live data, 2026-11):
+      Recipe: [0] ActiveFood, [4] servings the recipe makes (counted in the
+              [9] FoodMeasure), [6] RecipeIngredient[] array, [8] instructions,
+              [9] serving measure, [10] serving size amount, [11] serving size
+              measure, [13] created ms, [14] recipe key (== the food key)
+      ActiveFood: [1] FoodIdentifier ([1] category "Recipe", [3] name,
+                  [4] brand, [9] food key), [2] FoodServing whose FoodNutrients
+                  are the WHOLE recipe's totals (base = logged = 1), so
+                  per-serving nutrients are the totals divided by [4].
+      RecipeIngredient: [1] FoodIdentifier, [2] FoodServing for the amount
+                  used, [6] owning recipe's key, [7] food's created ms,
+                  [8] the ingredient's own key
+    """
+    active, ident = recipe.fields[0], recipe.fields[0].fields[1]
+    servings = recipe.fields[4] or 1.0
+    totals = entry_nutrients(active.fields[2])
+    per_serving = {o: v / servings for o, v in totals.items()}
+    out = {
+        "recipe_id": key_to_hex(recipe.fields[14]),
+        "food_id": key_to_hex(ident.fields[9]),
+        "name": ident.fields[3],
+        "brand": ident.fields[4] or "",
+        "servings": servings,
+        "serving_unit": measure_name(recipe.fields[9]),
+        "serving_size": {"amount": float(recipe.fields[10]) if recipe.fields[10] is not None else None,
+                         "unit": measure_name(recipe.fields[11])},
+        "calories_per_serving": round(per_serving.get(_NUTRIENTS["calories"], 0.0), 1),
+        "nutrients_per_serving": _nutrient_dict(per_serving),
+        "instructions": recipe.fields[8] or "",
+    }
+    if ingredients:
+        out["ingredients"] = [summarize_recipe_ingredient(i) for i in recipe_ingredients(recipe)]
+    else:
+        out["ingredient_count"] = len(recipe_ingredients(recipe))
+    return out
+
+
 def build_serving_size(option: GObject, amount: float | None, unit: str | None,
                        servings: float | None) -> GObject:
     """Make the FoodServingSize to log from one of the food's serving options.
@@ -544,8 +607,38 @@ class LoseItAPI:
 
     def _food(self, food_id: str) -> GObject:
         if self._foods.get(food_id) is None:
-            self._foods[food_id] = self.call("getFood", self.token(), self.key(food_id), None)
+            food = self.call("getFood", self.token(), self.key(food_id), None)
+            if food is None:
+                food = self._recipe_food(food_id)   # recipe foods have no getFood result
+            self._foods[food_id] = food
         return self._foods[food_id]
+
+    def _recipe_food(self, food_id: str) -> GObject | None:
+        """A FoodForFoodDatabase-shaped object for a recipe food, built from
+        the recipe itself: one serving option ("1 <serving unit>") whose
+        nutrients are the recipe's per-serving totals. Lets recipes found via
+        search or recents be sized and logged like ordinary foods; the entry
+        itself is created server-side by getUnsavedFoodLogEntry, which does
+        accept recipe keys."""
+        for recipe in self._recipes_raw():
+            ident = recipe.fields[0].fields[1]
+            if key_to_hex(ident.fields[9]) != food_id:
+                continue
+            servings = recipe.fields[4] or 1.0
+            totals = recipe.fields[0].fields[2].fields[0]
+            nutrients = copy.deepcopy(totals)
+            nutrients.fields[0] = nutrients.fields[1] = 1.0
+            nutrients.fields[2].fields = [
+                (k, box(v / servings, getattr(v, "signature", "")))
+                for k, v in totals.fields[2].fields]
+            option = GObject("FoodServingSize",
+                             [1.0, True, recipe.fields[9], 1.0, 1.0, 1.0],
+                             self.sig("FoodServingSize"))
+            sizes = GObject("FoodServingSize;", [[option]],
+                            self.sig("[Lcom.loseit.core.client.model.FoodServingSize;"))
+            return GObject("FoodForFoodDatabase", [ident, nutrients, sizes],
+                           self.sig("FoodForFoodDatabase"))
+        return None
 
     def _prefetch(self, food_ids: list[str]) -> None:
         """getFood for several foods in parallel; failures are cached as None."""
@@ -578,6 +671,196 @@ class LoseItAPI:
             raise LookupError(f"No recent or searched food with id prefix {text!r}; "
                               "use the full 32-char id")
         raise LookupError(f"Food id prefix {text!r} is ambiguous: {', '.join(matches)}")
+
+    # recipes
+    def _recipes_raw(self) -> list:
+        """getRecipes(token) -> Recipe[] (the result is the array object)."""
+        result = self.call("getRecipes", self.token())
+        return result.fields[0] if result else []
+
+    def list_recipes(self, query: str | None = None) -> list[dict]:
+        """All of the user's recipes, in the server's order; `query` keeps the
+        name matches, best first (like the app's recipe search)."""
+        recipes = [summarize_recipe(r, ingredients=False) for r in self._recipes_raw()]
+        if query:
+            scored = [(_match_score(normalize_words(query), r), r) for r in recipes]
+            recipes = [r for sc, r in sorted((x for x in scored if x[0] > 0),
+                                             key=lambda x: -x[0])]
+        return recipes
+
+    def _resolve_recipe(self, ref: str) -> GObject:
+        """A recipe by id prefix (hex) or by name, best match like _find_entries."""
+        recipes = self._recipes_raw()
+        if _HEX_PREFIX.match(ref.lower()):
+            matches = [r for r in recipes if key_to_hex(r.fields[14]).startswith(ref.lower())]
+        else:
+            scored = [(_match_score(normalize_words(ref),
+                                     {"name": r.fields[0].fields[1].fields[3], "brand": "",
+                                      "category": "Recipe"}), r) for r in recipes]
+            best = max((sc for sc, _ in scored), default=0)
+            matches = [r for sc, r in scored if sc == best and sc > 0]
+        if not matches:
+            raise LookupError(f"No recipe matching {ref!r}")
+        if len(matches) > 1:
+            options = ", ".join(f"{key_to_hex(r.fields[14])[:8]} {r.fields[0].fields[1].fields[3]}"
+                                 for r in matches)
+            raise LookupError(f"{ref!r} matches {len(matches)} recipes: {options}")
+        return matches[0]
+
+    def get_recipe(self, ref: str) -> dict:
+        return summarize_recipe(self._resolve_recipe(ref))
+
+    def delete_recipe(self, ref: str) -> dict:
+        """removeRecipe(token, Recipe[]) with the resolved recipe."""
+        recipe = self._resolve_recipe(ref)
+        deleted = summarize_recipe(recipe, ingredients=False)
+        array = GObject("Recipe;", [[recipe]], self.sig("[Lcom.loseit.core.client.model.Recipe;"))
+        self.call("removeRecipe", self.token(), array)
+        return {"deleted": deleted}
+
+    def create_recipe(self, name: str, servings: float, instructions: str,
+                      items: list[Item]) -> dict:
+        """Create a recipe with saveRecipe.
+
+        The Recipe is modelled on an existing one (the server rejects null
+        keys, so the recipe gets a fresh random key, shared by its
+        FoodIdentifier / ActiveFood / Recipe[14]; each ingredient gets its
+        own key and points back at the recipe key). Ingredients are resolved
+        and sized like log items, and the ActiveFood nutrients are the sum of
+        the ingredients' totals. New recipes are counted in Servings.
+        Verified live 2026-11 (create + delete round-trip).
+        """
+        if servings <= 0:
+            raise ValueError("Servings must be positive")
+        if not items:
+            raise ValueError("A recipe needs at least one ingredient")
+        raw = self._recipes_raw()
+        template = raw[0] if raw else None
+
+        plans = []
+        for item in items:
+            choice = self.resolve_item(item)
+            food = self._food(choice["food_id"])
+            if food is None:
+                raise LookupError(f"No food found for {item.query!r}")
+            size, _note = self._serving_for(food, *_size_args(choice["amount"], choice["unit"]))
+            plans.append((food, size))
+
+        now = datetime.now().astimezone()
+        now_ms = int(now.timestamp() * 1000)
+        recipe_key = self.key(secrets.token_hex(16))
+        recipe_hex = key_to_hex(recipe_key)
+        measure = GEnum("FoodMeasure", find_measure("Serving"), self.sig("FoodMeasure"))
+
+        ingredients, totals = [], {}
+        for food, size in plans:
+            ingredient = self._new_ingredient(template, food, size, recipe_key, now_ms)
+            ingredients.append(ingredient)
+            base = size.fields[0]
+            denom = food.fields[1].fields[0] or 1.0
+            for k, v in food.fields[1].fields[2].fields:
+                totals[k.ordinal] = totals.get(k.ordinal, 0.0) + v * base / denom
+        recipe = self._new_recipe(template, name, servings, instructions, ingredients,
+                                  totals, recipe_key, now_ms, measure)
+        self.call("saveRecipe", self.token(), recipe)
+        created = [r for r in self._recipes_raw() if key_to_hex(r.fields[14]) == recipe_hex]
+        if not created:
+            named = [r for r in self._recipes_raw()
+                     if r.fields[0].fields[1].fields[3] == name and r.fields[4] == servings]
+            if not named:
+                raise LoseItError("saveRecipe was accepted but the new recipe isn't listed")
+            created = named[-1:]
+        return {"created": summarize_recipe(created[0])}
+
+    def _new_ingredient(self, template: GObject | None, food: GObject, size: GObject,
+                        recipe_key: GObject, now_ms: int) -> GObject:
+        """A RecipeIngredient for `size` of `food`: its FoodServing is the
+        food's nutrients scaled to the amount (like a logged entry's)."""
+        base = size.fields[0]
+        nutrients = copy.deepcopy(food.fields[1])
+        nutrients.fields[0] = nutrients.fields[1] = base
+        nutrients.fields[2].fields = [
+            (k, box(v * base / (food.fields[1].fields[0] or 1.0), getattr(v, "signature", "")))
+            for k, v in food.fields[1].fields[2].fields]
+        serving = GObject("FoodServing", [nutrients, size], self.sig("FoodServing"))
+        own_key = self.key(secrets.token_hex(16))
+        if template is not None and recipe_ingredients(template):
+            ingredient = copy.deepcopy(recipe_ingredients(template)[0])
+            ingredient.fields[1] = food.fields[0]
+            ingredient.fields[2] = serving
+            ingredient.fields[6] = recipe_key
+            ingredient.fields[7] = food.fields[0].fields[8]
+            ingredient.fields[8] = own_key
+            return ingredient
+        return GObject("RecipeIngredient",
+                       [False, food.fields[0], serving, -1, False, -1,
+                        recipe_key, food.fields[0].fields[8], own_key],
+                       self.sig("RecipeIngredient"))
+
+    def _new_recipe(self, template: GObject | None, name: str, servings: float,
+                    instructions: str, ingredients: list, totals: dict,
+                    recipe_key: GObject, now_ms: int, measure: GEnum) -> GObject:
+        """Assemble the Recipe object for saveRecipe (see summarize_recipe
+        for the layout). With a template, opaque fields the server cares
+        about are inherited from a real recipe; without one (an account with
+        no recipes yet) the object is built from scratch with the same
+        layout — that path is best-effort and unverified."""
+        pairs, sigs = [], {}
+        if template is not None:
+            for k, v in template.fields[0].fields[2].fields[0].fields[2].fields:
+                sigs[k.ordinal] = getattr(v, "signature", "")
+        for ordinal, value in totals.items():
+            pairs.append((GEnum("FoodMeasurement", ordinal, self.sig("FoodMeasurement")),
+                          box(value, sigs.get(ordinal) or self.sig("java.lang.Double"))))
+        epoch_ms = int(datetime.combine(DAY_EPOCH, time.min, tzinfo=timezone.utc).timestamp() * 1000)
+        hours = (now_ms - epoch_ms) // 3_600_000
+
+        if template is not None:
+            recipe = copy.deepcopy(template)
+            active, ident = recipe.fields[0], recipe.fields[0].fields[1]
+            ident.fields[3] = name
+            ident.fields[8] = now_ms
+            ident.fields[9] = recipe_key
+            active.fields[8] = now_ms
+            active.fields[9] = recipe_key
+            if active.fields[3] is not None:
+                active.fields[3].fields[0] = box(now_ms, getattr(active.fields[3].fields[0], "signature", ""))
+                active.fields[3].fields[1] = hours
+            serving = active.fields[2]
+            serving.fields[0].fields[0] = serving.fields[0].fields[1] = 1.0
+            serving.fields[0].fields[2].fields = pairs
+            serving.fields[1].fields = [1.0, True, measure, 1.0, float(servings), float(servings)]
+            recipe.fields[4] = float(servings)
+            recipe.fields[6].fields[0] = ingredients
+            recipe.fields[8] = instructions
+            recipe.fields[9] = measure
+            recipe.fields[10] = box(1.0, getattr(template.fields[10], "signature", ""))
+            recipe.fields[11] = measure
+            recipe.fields[13] = now_ms
+            recipe.fields[14] = recipe_key
+            return recipe
+
+        ident = GObject("FoodIdentifier",
+                        [-1, "Recipe", None, name, "",
+                         GEnum("FoodProductType", 0, self.sig("FoodProductType")),
+                         -1, None, now_ms, recipe_key],
+                        self.sig("FoodIdentifier"))
+        nutrients = GObject("FoodNutrients", [1.0, 1.0, GObject("HashMap", pairs, self.sig("java.util.HashMap"))],
+                            self.sig("FoodNutrients"))
+        size = GObject("FoodServingSize", [1.0, True, measure, 1.0, float(servings), float(servings)],
+                       self.sig("FoodServingSize"))
+        serving = GObject("FoodServing", [nutrients, size], self.sig("FoodServing"))
+        hour_date = GObject("HourDate", [box(now_ms, self.sig("java.util.Date")), hours],
+                            self.sig("HourDate"))
+        active = GObject("ActiveFood", [-1, ident, serving, hour_date, False, 0, False, False,
+                                        now_ms, recipe_key], self.sig("ActiveFood"))
+        wrapper = GObject("RecipeIngredient;", [ingredients],
+                          self.sig("[Lcom.loseit.core.client.model.RecipeIngredient;"))
+        return GObject("Recipe",
+                       [active, None, None, False, float(servings), None, wrapper, True,
+                        instructions, measure, box(1.0, self.sig("java.lang.Double")), measure,
+                        True, now_ms, recipe_key],
+                       self.sig("Recipe"))
 
     def resolve_item(self, item: Item) -> dict:
         """Pick the food for a quick-log item.
