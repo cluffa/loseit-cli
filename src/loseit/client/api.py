@@ -323,20 +323,30 @@ def summarize_recipe(recipe: GObject, ingredients: bool = True) -> dict:
       ActiveFood: [1] FoodIdentifier ([1] category "Recipe", [3] name,
                   [4] brand, [9] food key), [2] FoodServing whose FoodNutrients
                   are the WHOLE recipe's totals (base = logged = 1), so
-                  per-serving nutrients are the totals divided by [4].
+                  per-serving nutrients are the totals divided by [4],
+                  [6] and [7] the "current version" flags (always equal).
       RecipeIngredient: [1] FoodIdentifier, [2] FoodServing for the amount
                   used, [6] owning recipe's key, [7] food's created ms,
                   [8] the ingredient's own key
+
+    Versioning: LoseIt never edits a recipe in place — every edit saves a
+    NEW Recipe object and clears the old version's current flags, so all
+    versions stay on the server, linked only by sharing a name (no version
+    number or parent pointer). The app lists only current versions.
     """
     active, ident = recipe.fields[0], recipe.fields[0].fields[1]
     servings = recipe.fields[4] or 1.0
     totals = entry_nutrients(active.fields[2])
     per_serving = {o: v / servings for o, v in totals.items()}
+    created_ms = recipe.fields[13]
     out = {
         "recipe_id": key_to_hex(recipe.fields[14]),
         "food_id": key_to_hex(ident.fields[9]),
         "name": ident.fields[3],
         "brand": ident.fields[4] or "",
+        "current": bool(active.fields[6]),
+        "created": (datetime.fromtimestamp(created_ms / 1000, timezone.utc).date().isoformat()
+                    if created_ms else None),
         "servings": servings,
         "serving_unit": measure_name(recipe.fields[9]),
         "serving_size": {"amount": float(recipe.fields[10]) if recipe.fields[10] is not None else None,
@@ -678,27 +688,57 @@ class LoseItAPI:
         result = self.call("getRecipes", self.token())
         return result.fields[0] if result else []
 
-    def list_recipes(self, query: str | None = None) -> list[dict]:
-        """All of the user's recipes, in the server's order; `query` keeps the
-        name matches, best first (like the app's recipe search)."""
-        recipes = [summarize_recipe(r, ingredients=False) for r in self._recipes_raw()]
+    def list_recipes(self, query: str | None = None, all_versions: bool = False) -> list[dict]:
+        """The user's recipes, in the server's order; `query` keeps the name
+        matches, best first (like the app's recipe search). Like the app,
+        only current versions are listed unless `all_versions` — superseded
+        versions stay on the server after every edit (see summarize_recipe).
+        The query applies within the selected set."""
+        raw = self._recipes_raw()
+        if not all_versions:
+            raw = [r for r in raw if r.fields[0].fields[6]]
+        recipes = [summarize_recipe(r, ingredients=False) for r in raw]
         if query:
             scored = [(_match_score(normalize_words(query), r), r) for r in recipes]
             recipes = [r for sc, r in sorted((x for x in scored if x[0] > 0),
                                              key=lambda x: -x[0])]
         return recipes
 
-    def _resolve_recipe(self, ref: str) -> GObject:
-        """A recipe by id prefix (hex) or by name, best match like _find_entries."""
+    def _resolve_recipe(self, ref: str, all_versions: bool = False) -> GObject:
+        """A recipe by id prefix (hex) or by name, best match like _find_entries.
+
+        An explicit id prefix reaches any version, current or retired — ids
+        are how retired recipes stay accessible. Name resolution prefers
+        current versions: it only considers superseded ones with
+        `all_versions`, and a name that matches nothing but superseded
+        versions fails with a "retired" error rather than silently
+        resolving to an old version.
+        """
         recipes = self._recipes_raw()
         if _HEX_PREFIX.match(ref.lower()):
             matches = [r for r in recipes if key_to_hex(r.fields[14]).startswith(ref.lower())]
         else:
-            scored = [(_match_score(normalize_words(ref),
-                                     {"name": r.fields[0].fields[1].fields[3], "brand": "",
-                                      "category": "Recipe"}), r) for r in recipes]
-            best = max((sc for sc, _ in scored), default=0)
-            matches = [r for sc, r in scored if sc == best and sc > 0]
+            def scored(pool):
+                return [(_match_score(normalize_words(ref),
+                                      {"name": r.fields[0].fields[1].fields[3], "brand": "",
+                                       "category": "Recipe"}), r) for r in pool]
+
+            def best_of(pool):
+                s = scored(pool)
+                best = max((sc for sc, _ in s), default=0)
+                return [r for sc, r in s if sc == best and sc > 0]
+
+            current = [r for r in recipes if r.fields[0].fields[6]]
+            matches = best_of(current if not all_versions else recipes)
+            if all_versions and len(matches) > 1:
+                live = [r for r in matches if r.fields[0].fields[6]]
+                if live:
+                    matches = live
+            if not matches and not all_versions and best_of(
+                    [r for r in recipes if not r.fields[0].fields[6]]):
+                raise LookupError(
+                    f"{ref!r} matches only retired recipe versions (superseded or "
+                    "deleted in the app); use --all to show it")
         if not matches:
             raise LookupError(f"No recipe matching {ref!r}")
         if len(matches) > 1:
@@ -707,12 +747,14 @@ class LoseItAPI:
             raise LookupError(f"{ref!r} matches {len(matches)} recipes: {options}")
         return matches[0]
 
-    def get_recipe(self, ref: str) -> dict:
-        return summarize_recipe(self._resolve_recipe(ref))
+    def get_recipe(self, ref: str, all_versions: bool = False) -> dict:
+        return summarize_recipe(self._resolve_recipe(ref, all_versions))
 
-    def delete_recipe(self, ref: str) -> dict:
-        """removeRecipe(token, Recipe[]) with the resolved recipe."""
-        recipe = self._resolve_recipe(ref)
+    def delete_recipe(self, ref: str, all_versions: bool = False) -> dict:
+        """removeRecipe(token, Recipe[]) with the resolved recipe. Resolution
+        follows get_recipe: current versions first, so a delete never
+        silently picks a superseded version over a current one."""
+        recipe = self._resolve_recipe(ref, all_versions)
         deleted = summarize_recipe(recipe, ingredients=False)
         array = GObject("Recipe;", [[recipe]], self.sig("[Lcom.loseit.core.client.model.Recipe;"))
         self.call("removeRecipe", self.token(), array)
@@ -727,7 +769,9 @@ class LoseItAPI:
         FoodIdentifier / ActiveFood / Recipe[14]; each ingredient gets its
         own key and points back at the recipe key). Ingredients are resolved
         and sized like log items, and the ActiveFood nutrients are the sum of
-        the ingredients' totals. New recipes are counted in Servings.
+        the ingredients' totals. New recipes are counted in Servings and
+        flagged current (ActiveFood [6]/[7] set explicitly — a template may
+        be a superseded version with them cleared).
         Verified live 2026-11 (create + delete round-trip).
         """
         if servings <= 0:
@@ -821,6 +865,7 @@ class LoseItAPI:
             ident.fields[3] = name
             ident.fields[8] = now_ms
             ident.fields[9] = recipe_key
+            active.fields[6] = active.fields[7] = True   # a new recipe is the current version
             active.fields[8] = now_ms
             active.fields[9] = recipe_key
             if active.fields[3] is not None:
@@ -852,7 +897,7 @@ class LoseItAPI:
         serving = GObject("FoodServing", [nutrients, size], self.sig("FoodServing"))
         hour_date = GObject("HourDate", [box(now_ms, self.sig("java.util.Date")), hours],
                             self.sig("HourDate"))
-        active = GObject("ActiveFood", [-1, ident, serving, hour_date, False, 0, False, False,
+        active = GObject("ActiveFood", [-1, ident, serving, hour_date, False, 0, True, True,
                                         now_ms, recipe_key], self.sig("ActiveFood"))
         wrapper = GObject("RecipeIngredient;", [ingredients],
                           self.sig("[Lcom.loseit.core.client.model.RecipeIngredient;"))

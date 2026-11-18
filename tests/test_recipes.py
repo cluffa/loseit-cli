@@ -46,9 +46,11 @@ def make_food(api, food_id: str, name: str, calories: float, measure: int = 8):
 
 
 def make_recipe(api, name: str, key_hex: str, servings: float = 4.0,
-                total_calories: float = 500.0, instructions: str = ""):
+                total_calories: float = 500.0, instructions: str = "",
+                current: bool = True, created_ms: int = MS):
     """A Recipe object with the layout summarize_recipe documents: one
-    ingredient (100 g of a 2 cal/g sauce = 200 of the total calories)."""
+    ingredient (100 g of a 2 cal/g sauce = 200 of the total calories).
+    `current` sets the ActiveFood [6]/[7] current-version flags."""
     sig = api.sig
     key = api.key(key_hex)
     measure = GEnum("FoodMeasure", 27, sig("FoodMeasure"))
@@ -59,11 +61,11 @@ def make_recipe(api, name: str, key_hex: str, servings: float = 4.0,
     size = GObject("FoodServingSize", [1.0, True, measure, 1.0, servings, servings], sig("FoodServingSize"))
     ident = GObject("FoodIdentifier",
                     [-1, "Recipe", None, name, "", GEnum("FoodProductType", 0, sig("FoodProductType")),
-                     -1, None, MS, key], sig("FoodIdentifier"))
+                     -1, None, created_ms, key], sig("FoodIdentifier"))
     active = GObject("ActiveFood",
                      [-1, ident, GObject("FoodServing", [nutrients, size], sig("FoodServing")),
-                      GObject("HourDate", [box(MS, sig("java.util.Date")), 10_000], sig("HourDate")),
-                      False, 7, True, True, MS, key], sig("ActiveFood"))
+                      GObject("HourDate", [box(created_ms, sig("java.util.Date")), 10_000], sig("HourDate")),
+                      False, 7, current, current, created_ms, key], sig("ActiveFood"))
 
     ing_ident = GObject("FoodIdentifier",
                         [-1, "Sauce", None, "Sauce", "Brand", GEnum("FoodProductType", 0, sig("FoodProductType")),
@@ -82,7 +84,7 @@ def make_recipe(api, name: str, key_hex: str, servings: float = 4.0,
                       sig("[Lcom.loseit.core.client.model.RecipeIngredient;"))
     return GObject("Recipe",
                    [active, None, None, False, servings, None, wrapper, True, instructions,
-                    measure, box(1.0, sig("java.lang.Double")), measure, True, MS, key],
+                    measure, box(1.0, sig("java.lang.Double")), measure, True, created_ms, key],
                    sig("Recipe"))
 
 
@@ -146,6 +148,8 @@ class TestSummarize:
         assert s["name"] == "Test Soup"
         assert s["recipe_id"] == "aa" * 16 and s["food_id"] == "aa" * 16
         assert s["servings"] == 4.0 and s["serving_unit"] == "Serving"
+        assert s["current"] is True
+        assert s["created"] == "2023-11-14"     # MS = 2023-11-14 (UTC)
         assert s["calories_per_serving"] == 125.0
         assert s["nutrients_per_serving"]["protein_g"] == 10.0
         assert s["instructions"] == "Boil everything."
@@ -168,6 +172,64 @@ class TestSummarize:
             api.get_recipe("nonexistent stew")
 
 
+class TestVersioning:
+    """Edits create new Recipe objects; the ActiveFood [6]/[7] flags mark the
+    current version(s). Default views match the app (current only)."""
+
+    @pytest.fixture(autouse=True)
+    def store(self, api):
+        # a retired-only recipe, plus a retired copy of a current recipe
+        api.fake.recipes.append(make_recipe(api, "Old Stew", "dd" * 16, current=False,
+                                            created_ms=1_600_000_000_000))
+        api.fake.recipes.append(make_recipe(api, "Plain Rice", "ee" * 16, current=False,
+                                            servings=2.0, total_calories=999.0))
+        return api
+
+    def test_summarize_retired(self, api):
+        s = summarize_recipe(api.fake.recipes[-2])
+        assert s["current"] is False
+        assert s["created"] == "2020-09-13"
+
+    def test_list_defaults_to_current(self, api):
+        assert [r["name"] for r in api.list_recipes()] == ["Test Soup", "Test Soup", "Plain Rice"]
+        names = [r["name"] for r in api.list_recipes(all_versions=True)]
+        assert names == ["Test Soup", "Test Soup", "Plain Rice", "Old Stew", "Plain Rice"]
+        # the query applies within the selected set
+        assert api.list_recipes("old stew") == []
+        assert [r["recipe_id"] for r in api.list_recipes("old stew", all_versions=True)] == ["dd" * 16]
+
+    def test_retired_name_errors_without_all(self, api):
+        with pytest.raises(LookupError, match="retired recipe versions"):
+            api.get_recipe("old stew")
+        with pytest.raises(LookupError, match="--all"):
+            api.get_recipe("old stew")
+        out = api.get_recipe("old stew", all_versions=True)
+        assert out["name"] == "Old Stew" and out["current"] is False
+
+    def test_id_reaches_retired(self, api):
+        out = api.get_recipe("dddd")
+        assert out["name"] == "Old Stew" and out["current"] is False
+
+    def test_name_resolution_prefers_current(self, api):
+        # "Plain Rice" exists as current (cc, 150 cal/serving) and retired (ee)
+        assert api.get_recipe("plain rice")["recipe_id"] == "cc" * 16
+        assert api.get_recipe("plain rice", all_versions=True)["recipe_id"] == "cc" * 16
+
+    def test_delete_never_picks_superseded(self, api):
+        out = api.delete_recipe("plain rice")
+        assert out["deleted"]["recipe_id"] == "cc" * 16
+        remaining = {r["recipe_id"] for r in api.list_recipes(all_versions=True)}
+        assert "ee" * 16 in remaining and "cc" * 16 not in remaining
+
+    def test_delete_retired_needs_all(self, api):
+        with pytest.raises(LookupError, match="retired"):
+            api.delete_recipe("old stew")
+        assert len(api.fake.recipes) == 5
+        out = api.delete_recipe("old stew", all_versions=True)
+        assert out["deleted"]["name"] == "Old Stew"
+        assert len(api.fake.recipes) == 4
+
+
 class TestCreateDelete:
     def test_create_builds_save_recipe(self, api, monkeypatch):
         choices = {parse_item("100 grams greek yogurt").query: YOGURT,
@@ -182,6 +244,8 @@ class TestCreateDelete:
         saved = next(p for m, p in api.fake.calls if m == "saveRecipe")[1]
         ident = saved.fields[0].fields[1]
         assert ident.fields[3] == "New Stew" and ident.fields[1] == "Recipe"
+        # a new recipe is the current version
+        assert saved.fields[0].fields[6] is True and saved.fields[0].fields[7] is True
         assert saved.fields[4] == 2.0 and saved.fields[8] == "Simmer."
         # the recipe key is shared, and each ingredient points back at it
         assert saved.fields[14] is ident.fields[9] is saved.fields[0].fields[9]
@@ -199,7 +263,24 @@ class TestCreateDelete:
         # and the created recipe is reported from the re-fetch
         created = out["created"]
         assert created["name"] == "New Stew" and created["calories_per_serving"] == 77.0
+        assert created["current"] is True
         assert [i["name"] for i in created["ingredients"]] == ["Greek Yogurt", "Honey"]
+
+    def test_create_from_retired_template_still_current(self, api, monkeypatch):
+        # the template is the store's first recipe; retire it so create would
+        # inherit cleared current flags if it didn't set them explicitly
+        template = api.fake.recipes[0]
+        template.fields[0].fields[6] = template.fields[0].fields[7] = False
+        monkeypatch.setattr(api, "resolve_item",
+                            lambda item: {"food_id": YOGURT, "source": "search",
+                                          "name": None, "alternatives": [],
+                                          "amount": item.amount, "unit": item.unit})
+        out = api.create_recipe("Fresh Stew", 1.0, "", [parse_item("100 grams greek yogurt")])
+        saved = next(p for m, p in api.fake.calls if m == "saveRecipe")[1]
+        assert saved.fields[0].fields[6] is True and saved.fields[0].fields[7] is True
+        assert out["created"]["current"] is True
+        # ... and so it shows in the default (current-only) list
+        assert "Fresh Stew" in [r["name"] for r in api.list_recipes()]
 
     def test_create_validation(self, api):
         with pytest.raises(ValueError, match="at least one ingredient"):
@@ -249,18 +330,22 @@ class StubAPI:
 
     def __init__(self):
         self.created = self.deleted = None
+        self.list_all = self.get_all = self.delete_all = None
         StubAPI.instances.append(self)
 
-    def list_recipes(self, query=None):
+    def list_recipes(self, query=None, all_versions=False):
+        self.list_all = all_versions
         return [{"recipe_id": "ab" * 16, "name": "Soup", "servings": 4.0,
                  "serving_unit": "Serving", "calories_per_serving": 125.0,
-                 "ingredient_count": 3}]
+                 "current": True, "created": "2023-11-14", "ingredient_count": 3}]
 
-    def get_recipe(self, ref):
+    def get_recipe(self, ref, all_versions=False):
+        self.get_all = all_versions
         if ref == "missing":
             raise LookupError(f"No recipe matching {ref!r}")
         return {"recipe_id": "ab" * 16, "name": "Soup", "servings": 4.0,
                 "serving_unit": "Serving", "calories_per_serving": 125.0,
+                "current": True, "created": "2023-11-14",
                 "instructions": "Boil.", "ingredients": []}
 
     def create_recipe(self, name, servings, instructions, items):
@@ -268,8 +353,9 @@ class StubAPI:
         return {"created": {"name": name, "servings": servings, "serving_unit": "Serving",
                             "calories_per_serving": 10.0, "recipe_id": "cd" * 16, "ingredients": []}}
 
-    def delete_recipe(self, ref):
+    def delete_recipe(self, ref, all_versions=False):
         self.deleted = ref
+        self.delete_all = all_versions
         return {"deleted": {"name": "Soup", "recipe_id": "ab" * 16}}
 
 
@@ -289,6 +375,17 @@ class TestCLI:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["count"] == 1 and data["recipes"][0]["name"] == "Soup"
+        assert StubAPI.instances[-1].list_all is False
+
+    def test_recipes_all_flag(self):
+        result = self.invoke(["recipes", "--all"])
+        assert result.exit_code == 0
+        assert StubAPI.instances[-1].list_all is True
+
+    def test_recipe_all_flag(self):
+        result = self.invoke(["recipe", "soup", "--all"])
+        assert result.exit_code == 0
+        assert StubAPI.instances[-1].get_all is True
 
     def test_recipe_not_found_exit_code(self):
         result = self.invoke(["recipe", "missing"])
@@ -308,4 +405,10 @@ class TestCLI:
         result = self.invoke(["recipe-delete", "soup"])
         assert result.exit_code == 0
         assert StubAPI.instances[-1].deleted == "soup"
+        assert StubAPI.instances[-1].delete_all is False
         assert json.loads(result.output)["deleted"]["name"] == "Soup"
+
+    def test_recipe_delete_all_flag(self):
+        result = self.invoke(["recipe-delete", "soup", "--all"])
+        assert result.exit_code == 0
+        assert StubAPI.instances[-1].delete_all is True
