@@ -40,8 +40,8 @@ Quick reference (JSON output when piped; dates: today|yesterday|tomorrow|±N|YYY
   loseit recent [QUERY]                 your foods, most recent first
   loseit search QUERY                   foods with default serving + calories
   loseit food ID                        a food's serving sizes and nutrition
-  loseit recipes [QUERY]                your recipes (name, servings, cal/serving)
-  loseit recipe REF                     one recipe: ingredients, instructions, nutrition
+  loseit recipes [QUERY] [--all]        your recipes, current versions (--all: every version)
+  loseit recipe REF [--all]             one recipe: ingredients, instructions, nutrition
   loseit recipe-create NAME --servings N [--instructions "..."] "INGREDIENT"...
                                         create a recipe; ingredients are log-style items
   loseit recipe-delete REF              delete a recipe (REF = name or recipe id prefix)
@@ -438,14 +438,16 @@ def food(food_id: str, as_json: bool):
 @main.command()
 @click.argument("query", required=False)
 @click.option("--limit", type=int, default=50, show_default=True)
+@click.option("--all", "all_versions", is_flag=True,
+              help="Include superseded versions (default: current versions only, like the app)")
 @json_option
 @cli_error_handler
-def recipes(query: str | None, limit: int, as_json: bool):
+def recipes(query: str | None, limit: int, all_versions: bool, as_json: bool):
     """Your recipes, best name match first when QUERY is given."""
     from loseit.client.api import LoseItAPI
     from loseit.cli.formatting import print_table
 
-    found = LoseItAPI().list_recipes(query)
+    found = LoseItAPI().list_recipes(query, all_versions=all_versions)
     data = {"recipes": found[:limit], "count": len(found)}
     emit(data, as_json, lambda d: print_table(
         ["Recipe ID", "Name", "Servings", "Cal/serving"],
@@ -456,17 +458,20 @@ def recipes(query: str | None, limit: int, as_json: bool):
 
 @main.command()
 @click.argument("ref")
+@click.option("--all", "all_versions", is_flag=True,
+              help="Also resolve names that only match superseded/retired versions")
 @json_option
 @cli_error_handler
-def recipe(ref: str, as_json: bool):
+def recipe(ref: str, all_versions: bool, as_json: bool):
     """One recipe: servings, ingredients, instructions and per-serving nutrition.
 
-    REF is a recipe name (best match) or a recipe id prefix from `recipes`.
+    REF is a recipe name (best match among current versions) or a recipe id
+    prefix from `recipes` (an id reaches any version, current or retired).
     """
     from loseit.client.api import LoseItAPI
     from loseit.cli.formatting import print_table
 
-    info = LoseItAPI().get_recipe(ref)
+    info = LoseItAPI().get_recipe(ref, all_versions=all_versions)
 
     def human(d):
         print_table(["Amount", "Unit", "Ingredient", "Cal"],
@@ -474,6 +479,8 @@ def recipe(ref: str, as_json: bool):
                      for i in d["ingredients"]],
                     title=f"{d['name']} — makes {d['servings']:g} {d['serving_unit']}, "
                           f"{d['calories_per_serving']:g} cal/serving")
+        if not d["current"]:
+            click.echo("(retired version — not shown in the app)")
         if d["instructions"]:
             click.echo(d["instructions"])
     emit(info, as_json, human)
@@ -666,13 +673,16 @@ def recipe_create(name: str, ingredients: tuple[str, ...], servings: float,
 
 @main.command("recipe-delete")
 @click.argument("ref")
+@click.option("--all", "all_versions", is_flag=True,
+              help="Also resolve names that only match superseded/retired versions")
 @json_option
 @cli_error_handler
-def recipe_delete(ref: str, as_json: bool):
-    """Delete a recipe by name (best match) or recipe id prefix."""
+def recipe_delete(ref: str, all_versions: bool, as_json: bool):
+    """Delete a recipe by name (best match among current versions) or
+    recipe id prefix."""
     from loseit.client.api import LoseItAPI
 
-    result = LoseItAPI().delete_recipe(ref)
+    result = LoseItAPI().delete_recipe(ref, all_versions=all_versions)
 
     def human(r):
         d = r["deleted"]
