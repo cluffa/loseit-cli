@@ -30,7 +30,7 @@ cd loseit-cli && uv venv && uv pip install -e . pytest
 | `recent [QUERY]` | the user's foods ranked like the app (match, recency, frequency). |
 | `search`, `food ID`, `weight [--days]` | search DB (each hit has a default `serving` + `calories` via parallel getFood), serving sizes, weigh-ins. |
 | `completion [zsh\|bash\|fish]` | shell completion script (Click); completers in `main.py` read only the local recents index (foods, entries on `--date`, date words). Enable with `eval "$(loseit completion zsh)"` in ~/.zshrc. |
-| `login [--browser X] [--export] [--import S]` | `LOSEIT_SESSION` env var = exported session for headless agents. |
+| `login [--browser X] [--password] [--cookies F] [--export] [--import S]` | `--password`: headless HTTP login from LOSEIT_EMAIL/LOSEIT_PASSWORD. `--cookies`: import a browser cookie export. `LOSEIT_SESSION` env var = exported session for headless agents. |
 
 ## Architecture
 
@@ -48,7 +48,7 @@ cli/main.py ── client/api.py ──┬─ gwt_schema.py  (extract layouts fr
 
 ## Key protocol facts (verified live)
 
-- **Auth:** cookies (`liauth`, `fn_auth`, `JSESSIONID`, …) plus `X-GWT-Permutation`. Login is `POST api.loseit.com/account/login` with reCAPTCHA Enterprise, so headless login isn't possible. Use the pop-up window or `--export`.
+- **Auth:** cookies (`liauth`, `fn_auth`, `JSESSIONID`, …) plus `X-GWT-Permutation`. Login is `POST api.loseit.com/account/login` (form: `grant_type=password`, `username`, `password`). The web form adds a reCAPTCHA Enterprise token, but the API answers without one (an unknown account gets `404 invalid_grant NOT_FOUND`). `liauth`/`fn_auth` hold the same JWT, with `exp` set 14 days after login; it isn't extended by use. A successful login (verified 2026-10-21) returns 200 with tokens only in Set-Cookie (`liauth`, `fn_auth`, `fn_authed`, `Max-Age=1209600`) and JSON `{user_id, username}`. There's no refresh or access token, so the `grant_type=refresh_token` path, which takes `access_token` + `refresh_token`, stays dormant. Session checks load `/index.jsp`: `/` is now an edge-cached marketing page with no embedded user data, whatever the cookies are. `UserAuthenticationFailedException` → `LoseItAuthError` → exit 3.
 - **`DayDate`:** (java.util.Date at local midnight, days since **2000-12-31**, hoursFromGMT).
 - **`ServiceRequestToken`:** (null, UserId(id, username, hoursFromGMT)).
 - **Logging:**

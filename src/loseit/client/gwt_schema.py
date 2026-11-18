@@ -183,7 +183,7 @@ class _Compiler:
                 prims[name] = BOOL
             elif self._body_is(name, r"[\w$]+\(a\.a,''\+b\);BTv=c-1"):
                 prims[name] = NUMBER
-            elif "lm(a.i,b)" in body or re.search(r"lm\(a\.i,b\);c=a\.i\.a\.length", body):
+            elif re.search(r"lm\(a\.[\w$]+,b\)", body):
                 prims[name] = "strref"
             elif self._is_strref(name, params, body, strref_uses):
                 prims[name] = "strref"
