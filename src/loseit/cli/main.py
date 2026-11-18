@@ -40,6 +40,11 @@ Quick reference (JSON output when piped; dates: today|yesterday|tomorrow|±N|YYY
   loseit recent [QUERY]                 your foods, most recent first
   loseit search QUERY                   foods with default serving + calories
   loseit food ID                        a food's serving sizes and nutrition
+  loseit recipes [QUERY]                your recipes (name, servings, cal/serving)
+  loseit recipe REF                     one recipe: ingredients, instructions, nutrition
+  loseit recipe-create NAME --servings N [--instructions "..."] "INGREDIENT"...
+                                        create a recipe; ingredients are log-style items
+  loseit recipe-delete REF              delete a recipe (REF = name or recipe id prefix)
   loseit weight [--days N]              weigh-ins
   loseit skill [install]                agent skill (SKILL.md) for AI assistants
   loseit completion [zsh|bash|fish]     tab completion: eval "$(loseit completion zsh)"
@@ -431,6 +436,50 @@ def food(food_id: str, as_json: bool):
 
 
 @main.command()
+@click.argument("query", required=False)
+@click.option("--limit", type=int, default=50, show_default=True)
+@json_option
+@cli_error_handler
+def recipes(query: str | None, limit: int, as_json: bool):
+    """Your recipes, best name match first when QUERY is given."""
+    from loseit.client.api import LoseItAPI
+    from loseit.cli.formatting import print_table
+
+    found = LoseItAPI().list_recipes(query)
+    data = {"recipes": found[:limit], "count": len(found)}
+    emit(data, as_json, lambda d: print_table(
+        ["Recipe ID", "Name", "Servings", "Cal/serving"],
+        [[r["recipe_id"][:8], r["name"], f"{r['servings']:g} {r['serving_unit']}",
+          f"{r['calories_per_serving']:g}"] for r in d["recipes"]],
+        title=f"Recipes ({d['count']})" + (f": {query}" if query else "")))
+
+
+@main.command()
+@click.argument("ref")
+@json_option
+@cli_error_handler
+def recipe(ref: str, as_json: bool):
+    """One recipe: servings, ingredients, instructions and per-serving nutrition.
+
+    REF is a recipe name (best match) or a recipe id prefix from `recipes`.
+    """
+    from loseit.client.api import LoseItAPI
+    from loseit.cli.formatting import print_table
+
+    info = LoseItAPI().get_recipe(ref)
+
+    def human(d):
+        print_table(["Amount", "Unit", "Ingredient", "Cal"],
+                    [[f"{i['amount']:g}", i["unit"], i["name"], f"{i['calories']:g}"]
+                     for i in d["ingredients"]],
+                    title=f"{d['name']} — makes {d['servings']:g} {d['serving_unit']}, "
+                          f"{d['calories_per_serving']:g} cal/serving")
+        if d["instructions"]:
+            click.echo(d["instructions"])
+    emit(info, as_json, human)
+
+
+@main.command()
 @click.option("--days", type=int, default=90, show_default=True)
 @json_option
 @cli_error_handler
@@ -585,6 +634,49 @@ def delete(entries: tuple[str, ...], target_date: str | None, all_entries: bool,
         for e in r["deleted"]:
             click.echo(f"✓ Deleted {e['name']} ({_where(e)}, {e['entry_id'][:8]})")
         _human_day(r["day"])
+    emit(result, as_json, human)
+
+
+@main.command("recipe-create")
+@click.argument("name")
+@click.argument("ingredients", nargs=-1, required=True)
+@click.option("--servings", type=float, default=1.0, show_default=True,
+              help="How many servings the recipe makes")
+@click.option("--instructions", default="", help="Cooking instructions / notes")
+@json_option
+@cli_error_handler
+def recipe_create(name: str, ingredients: tuple[str, ...], servings: float,
+                  instructions: str, as_json: bool):
+    """Create a recipe. INGREDIENTS are log-style items ("100g greek yogurt",
+    "1 tbsp honey"), resolved from your recent foods first, then search."""
+    from loseit.client.api import LoseItAPI
+    from loseit.client.parse import parse_item
+
+    result = LoseItAPI().create_recipe(name, servings, instructions,
+                                       [parse_item(t) for t in ingredients])
+
+    def human(r):
+        d = r["created"]
+        click.echo(f"✓ Recipe {d['name']!r}: makes {d['servings']:g} {d['serving_unit']}, "
+                   f"{d['calories_per_serving']:g} cal/serving ({d['recipe_id'][:8]})")
+        for i in d["ingredients"]:
+            click.echo(f"  {i['amount']:g} {i['unit']} {i['name']} — {i['calories']:g} cal")
+    emit(result, as_json, human)
+
+
+@main.command("recipe-delete")
+@click.argument("ref")
+@json_option
+@cli_error_handler
+def recipe_delete(ref: str, as_json: bool):
+    """Delete a recipe by name (best match) or recipe id prefix."""
+    from loseit.client.api import LoseItAPI
+
+    result = LoseItAPI().delete_recipe(ref)
+
+    def human(r):
+        d = r["deleted"]
+        click.echo(f"✓ Deleted recipe {d['name']!r} ({d['recipe_id'][:8]})")
     emit(result, as_json, human)
 
 

@@ -1,6 +1,6 @@
 # HANDOFF — loseit-cli
 
-**Last updated:** 2026-10-06 · **Branch:** `main` · public repo
+**Last updated:** 2026-11-18 · **Branch:** `main` · public repo
 
 ## What this is
 
@@ -29,6 +29,9 @@ cd loseit-cli && uv venv && uv pip install -e . pytest
 | `status`, `summary` | day totals (+ entries with ids). |
 | `recent [QUERY]` | the user's foods ranked like the app (match, recency, frequency). |
 | `search`, `food ID`, `weight [--days]` | search DB (each hit has a default `serving` + `calories` via parallel getFood), serving sizes, weigh-ins. |
+| `recipes [QUERY]`, `recipe REF` | list recipes (name, servings, cal/serving, recipe id) / show one (ingredients, instructions, per-serving nutrients). REF = name (best match) or recipe id prefix. |
+| `recipe-create NAME --servings N [--instructions "..."] INGREDIENT...` | create via `saveRecipe`; ingredients are log-style items resolved like `log`. New recipes are counted in Servings. |
+| `recipe-delete REF` | delete via `removeRecipe` (no confirmation, like `delete`). Recipes can also be logged: `log` by recipe food id (prefix ok once seen) sizes them from the recipe itself. |
 | `completion [zsh\|bash\|fish]` | shell completion script (Click); completers in `main.py` read only the local recents index (foods, entries on `--date`, date words). Enable with `eval "$(loseit completion zsh)"` in ~/.zshrc. |
 | `login [--browser X] [--password] [--cookies F] [--export] [--import S]` | `--password`: headless HTTP login from LOSEIT_EMAIL/LOSEIT_PASSWORD. `--cookies`: import a browser cookie export. `LOSEIT_SESSION` env var = exported session for headless agents. |
 
@@ -61,6 +64,7 @@ cli/main.py ── client/api.py ──┬─ gwt_schema.py  (extract layouts fr
 - **Nutrients:** `FoodNutrients` = ([0] servings the values are for, [1] servings logged, [2] {FoodMeasurement: value}); total = value × [1]/[0]. FoodMeasurement: 0 kcal, 3 fat, 4 sat fat, 8 chol, 9 sodium, 10 carbs, 11 fiber, 12 sugar, 13 protein. FoodLogEntryType: 0 breakfast, 1 lunch, 2 dinner, 3 snacks. FoodMeasure names and sizes are in `api._MEASURES`.
 - **Day totals:** budget = `DailyLogEntry[6]` (`DailyLogGoalsState[0]`, matches the budget the app shows), burn target = `DailyLogGoalsState[1]` (`CalorieBurnMetrics[1]`), food kcal = `DailyLogEntry[4]`. Deficit = burn − budget.
 - **Weigh-ins:** `getDailyDetailsIncludingPendingForDateRange(token, Integer userId, from, to)` returns `DailyDetails[]`, where `[10]` is the day's `RecordedWeight`.
+- **Recipes (verified live 2026-11, create + delete round-trip):** `getRecipes(token)` returns the `Recipe[]` array object (its `[0]` is the list). `Recipe`: `[0]` ActiveFood (`[1]` FoodIdentifier with category "Recipe" and the food key at `[9]`; `[2]` FoodServing whose FoodNutrients are the WHOLE recipe's totals, base = logged = 1), `[4]` servings the recipe makes (counted in the `[9]` FoodMeasure), `[6]` RecipeIngredient array, `[8]` instructions, `[10]` serving size amount (boxed), `[11]` serving size measure, `[13]` created ms, `[14]` recipe key (== food key). Per-serving nutrients = totals / `[4]`. `RecipeIngredient`: `[1]` FoodIdentifier, `[2]` FoodServing for the amount used, `[6]` owning recipe's key, `[7]` food's created ms, `[8]` own key. `saveRecipe(token, Recipe)`: the server rejects null keys — give the recipe a fresh random key shared by FoodIdentifier/ActiveFood/`[14]`, each ingredient its own key with `[6]` pointing back. `removeRecipe(token, Recipe[])` takes the array GObject (`fields = [[recipe]]`), not a Python list. Recipe foods have NO `getFood` result (it returns null), but `getUnsavedFoodLogEntry` accepts recipe keys, so logging works: `api._recipe_food` synthesizes a FoodForFoodDatabase from the recipe (one option, "1 \<serving unit\>", per-serving nutrients) for sizing. Nutrient map values must stay BoxedFloat with their `java.lang.Double` signature or the encoder fails.
 
 ## Tests
 
@@ -69,14 +73,15 @@ cli/main.py ── client/api.py ──┬─ gwt_schema.py  (extract layouts fr
 ## Known gaps / non-goals
 
 - **Weight logging:** not implemented. `saveRecordedWeight(token, double, DayDate)` exists, but there's no delete method, so it couldn't be tested safely.
-- **Not supported yet:** exercise logging, custom foods, recipes, water and notes.
+- **Not supported yet:** exercise logging, custom foods, water and notes.
+- **Recipe create from scratch:** `create_recipe` models the new Recipe on an existing one (opaque fields inherited). An account with no recipes at all takes a from-scratch path with the same layout — unverified, since it can't be tested without deleting the user's recipes.
 - **Session expiry:** the shape of an expired-session response hasn't been observed; HTTP 401/403 are mapped to the auth exit code.
 
 ## Next steps
 
 1. Weight logging (`saveRecordedWeight`), once there's a safe way to undo it.
 2. Exercise logging (`saveCustomExerciseLogEntry`, `updateExerciseLogEntry`, `deleteExerciseLogEntry`).
-3. Recipes and custom foods if wanted.
+3. Custom foods if wanted.
 
 ## Dependencies
 

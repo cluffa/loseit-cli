@@ -62,7 +62,15 @@ loseit copy --from yesterday --meal breakfast   # repeat a meal today
 - `loseit weight [--days N]` lists weigh-ins.
 - Ids from `recent` or `search` output work as 8-character prefixes everywhere.
 
+## Recipes
+
+- `loseit recipes [QUERY]` lists the user's recipes with servings and calories per serving; each has a `recipe_id` (which is also its food id).
+- `loseit recipe REF` shows one recipe (ingredients with amounts, instructions, per-serving nutrients). REF is a recipe name (best match; ambiguous names error and list candidates) or a recipe id prefix.
+- `loseit recipe-create "NAME" --servings N [--instructions "..."] "INGREDIENT" ...` creates a recipe. Ingredients use the same text format and resolution as `log` items. New recipes are counted in Servings.
+- `loseit recipe-delete REF` deletes a recipe (no confirmation, like `delete`).
+- Logging a recipe: `loseit log <recipe food id> --servings 1` (or `--amount 40 --unit g` for gram-counted recipes). Recipe foods have no database entry of their own; the CLI sizes them from the recipe. Name resolution may prefer a same-named regular food from recents/search, so the id form is the reliable one.
+
 ## Caveats
 
 - LoseIt's food database includes user-entered errors (for example "2 slices = 90 cal" filed as 1 slice). If a number looks off, check `alternatives` or ask the user.
-- Exercise, weight logging, recipes and custom foods aren't supported yet.
+- Exercise, weight logging and custom foods aren't supported yet.
