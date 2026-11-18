@@ -1,0 +1,12 @@
+{
+  "_comment": "Shape of a real POST api.loseit.com/account/login success (2026-10-21), sanitized: token values, ids and email replaced. No refresh_token or access_token in the body.",
+  "status": 200,
+  "set_cookie": [
+    "fn_authed=1; Max-Age=1209600; Expires=Wed, 04 Nov 2026 17:09:05 GMT; Domain=loseit.com; Path=/; Secure",
+    "fn_auth={TOKEN}; Max-Age=1209600; Expires=Wed, 04 Nov 2026 17:09:05 GMT; Domain=loseit.com; Path=/; Secure; HttpOnly",
+    "liauth={TOKEN}; Max-Age=1209600; Expires=Wed, 04 Nov 2026 17:09:05 GMT; Domain=loseit.com; Path=/; Secure; HttpOnly",
+    "__cf_bm=cfbm; HttpOnly; SameSite=None; Secure; Path=/; Domain=loseit.com; Expires=Wed, 21 Oct 2026 17:39:05 GMT",
+    "_cfuvid=cfuvid; HttpOnly; SameSite=None; Secure; Path=/; Domain=loseit.com"
+  ],
+  "body": {"user_id": 12345678, "username": "user@example.com"}
+}
