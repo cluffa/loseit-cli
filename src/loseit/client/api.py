@@ -274,8 +274,9 @@ def summarize_food(food: GObject) -> dict:
     [2] FoodServingSize[] options, each "[4] <unit [2]> = [3] base servings"."""
     ident, nutrients, sizes = food.fields[0], food.fields[1], food.fields[2]
     per_base = {k.ordinal: v for k, v in nutrients.fields[2].fields}
+    size_list = sizes.fields[0] if sizes is not None and sizes.fields else []
     options = []
-    for sz in sizes.fields[0]:
+    for sz in size_list:
         options.append({
             "amount": round(sz.fields[4], 3),
             "unit": measure_name(sz.fields[2]),
@@ -286,7 +287,7 @@ def summarize_food(food: GObject) -> dict:
         "name": ident.fields[3],
         "brand": ident.fields[4] or "",
         "servings": options,
-        "nutrients_per_serving": _nutrient_dict({k: v * sizes.fields[0][0].fields[3]
+        "nutrients_per_serving": _nutrient_dict({k: v * size_list[0].fields[3]
                                                  for k, v in per_base.items()}) if options else {},
     }
 
@@ -996,13 +997,18 @@ class LoseItAPI:
             food = self._foods.get(c["food_id"])
             if food is None:
                 continue
-            c["units"] = [measure_name(o.fields[2]) for o in food.fields[2].fields[0]]
             try:
+                sizes = food.fields[2]
+                size_list = sizes.fields[0] if sizes is not None and sizes.fields else []
+                c["units"] = [measure_name(o.fields[2]) for o in size_list]
                 amount, unit, servings = _size_args(c["amount"], c["unit"])
                 size, note = self._serving_for(food, amount, unit, servings)
                 c.update(calories=_calories(food, size), fallback=note is not None,
                          unit_used=measure_name(size.fields[2]))
-            except ValueError:
+            except (ValueError, AttributeError, TypeError, IndexError):
+                # A food with missing/broken serving data is unusable as a
+                # candidate, not a crash: mark it as not fitting so the
+                # caller falls through to the next candidate (issue #11).
                 c["fits"] = False
 
     def _serving_for(self, food: GObject, amount: float | None, unit: str | None,
@@ -1014,9 +1020,13 @@ class LoseItAPI:
         the food's own count unit ("Serving", "Bottle"); the note says so.
         Returns (FoodServingSize, note or None).
         """
-        options = food.fields[2].fields[0]
+        if food is None:
+            raise ValueError("This food has no serving sizes")
+        sizes = food.fields[2] if len(food.fields) > 2 else None
+        options = sizes.fields[0] if sizes is not None and sizes.fields else []
         if not options:
-            raise RuntimeError("This food has no serving sizes")
+            name = food.fields[0].fields[3] if food.fields and food.fields[0] else "This food"
+            raise ValueError(f"{name} has no serving sizes")
         option, note = options[0], None
         if unit is not None:
             wanted = find_measure(unit)
@@ -1054,6 +1064,8 @@ class LoseItAPI:
         """Resolve everything needed to log a food, without writing."""
         parse_meal(meal)
         food = self._food(food_id)
+        if food is None:
+            raise LookupError(f"No food found for id {food_id!r}")
         size, note = self._serving_for(food, amount, unit, servings)
         calories = _calories(food, size)
         notes = [note] if note else []
