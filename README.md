@@ -74,6 +74,8 @@ loseit edit bread --food "whole wheat bread" --date yesterday   # swap food, kee
 loseit delete cookies --date yesterday           # or --all [--meal dinner]
 loseit copy --from yesterday --meal breakfast    # repeat a meal today
 loseit recent [QUERY] / search QUERY / food ID / weight [--days N]
+loseit recipes / recipe REF / recipe-create NAME "INGREDIENT"...   # recipes; create auto-picks an icon
+loseit recipe-icon REF [ICON] / icons [QUERY]    # set a recipe's icon; browse the icon vocabulary
 ```
 
 Dates are `today`, `yesterday`, `tomorrow`, `±N` or `YYYY-MM-DD`. Foods resolve from your recent foods first (with the amount you usually log), then from LoseIt's search. Ids from `recent`/`search` output work as 8-character prefixes. Run `loseit --help` or `loseit <command> --help` for details.

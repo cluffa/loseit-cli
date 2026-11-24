@@ -42,9 +42,12 @@ Quick reference (JSON output when piped; dates: today|yesterday|tomorrow|±N|YYY
   loseit food ID                        a food's serving sizes and nutrition
   loseit recipes [QUERY] [--all]        your recipes, current versions (--all: every version)
   loseit recipe REF [--all]             one recipe: ingredients, instructions, nutrition
-  loseit recipe-create NAME --servings N [--instructions "..."] "INGREDIENT"...
-                                        create a recipe; ingredients are log-style items
+  loseit recipe-create NAME --servings N [--instructions "..."] [--icon ICON | --no-icon]
+                    "INGREDIENT"...     create a recipe; ingredients are log-style items;
+                                        an icon is auto-picked from the name unless told otherwise
   loseit recipe-delete REF              delete a recipe (REF = name or recipe id prefix)
+  loseit recipe-icon REF [ICON]         set a recipe's icon; without ICON, auto-pick from its name
+  loseit icons [QUERY]                  the icon vocabulary (fuzzy-filtered by QUERY)
   loseit weight [--days N]              weigh-ins
   loseit skill [install]                agent skill (SKILL.md) for AI assistants
   loseit completion [zsh|bash|fish]     tab completion: eval "$(loseit completion zsh)"
@@ -450,8 +453,8 @@ def recipes(query: str | None, limit: int, all_versions: bool, as_json: bool):
     found = LoseItAPI().list_recipes(query, all_versions=all_versions)
     data = {"recipes": found[:limit], "count": len(found)}
     emit(data, as_json, lambda d: print_table(
-        ["Recipe ID", "Name", "Servings", "Cal/serving"],
-        [[r["recipe_id"][:8], r["name"], f"{r['servings']:g} {r['serving_unit']}",
+        ["Recipe ID", "Name", "Icon", "Servings", "Cal/serving"],
+        [[r["recipe_id"][:8], r["name"], r.get("icon", ""), f"{r['servings']:g} {r['serving_unit']}",
           f"{r['calories_per_serving']:g}"] for r in d["recipes"]],
         title=f"Recipes ({d['count']})" + (f": {query}" if query else "")))
 
@@ -478,12 +481,36 @@ def recipe(ref: str, all_versions: bool, as_json: bool):
                     [[f"{i['amount']:g}", i["unit"], i["name"], f"{i['calories']:g}"]
                      for i in d["ingredients"]],
                     title=f"{d['name']} — makes {d['servings']:g} {d['serving_unit']}, "
-                          f"{d['calories_per_serving']:g} cal/serving")
+                          f"{d['calories_per_serving']:g} cal/serving"
+                          + (f", icon: {d['icon']}" if d.get("icon") else ""))
         if not d["current"]:
             click.echo("(retired version — not shown in the app)")
         if d["instructions"]:
             click.echo(d["instructions"])
     emit(info, as_json, human)
+
+
+@main.command()
+@click.argument("query", required=False)
+@json_option
+def icons(query: str | None, as_json: bool):
+    """The icon vocabulary (food categories), one per line.
+
+    QUERY fuzzy-filters: a substring, or words matching the icon's parts
+    ("frost" and "choc frost" both find FrostingChocolate). Offline — this
+    reads the vocabulary shipped with the CLI, no login needed.
+    """
+    from loseit.client.icons import filter_icons, icon_vocabulary
+
+    found = filter_icons(query)
+    data = {"icons": found, "count": len(found), "total": len(icon_vocabulary())}
+
+    def human(d):
+        if not d["icons"]:
+            click.echo(f"No icons match {query!r}.")
+        for icon in d["icons"]:
+            click.echo(icon)
+    emit(data, as_json, human)
 
 
 @main.command()
@@ -650,17 +677,23 @@ def delete(entries: tuple[str, ...], target_date: str | None, all_entries: bool,
 @click.option("--servings", type=float, default=1.0, show_default=True,
               help="How many servings the recipe makes")
 @click.option("--instructions", default="", help="Cooking instructions / notes")
+@click.option("--icon", default=None, metavar="ICON",
+              help="Icon for the recipe (see 'loseit icons'); default: auto-pick from the name")
+@click.option("--no-icon", is_flag=True, help="Don't set an icon (skip the auto-pick)")
 @json_option
 @cli_error_handler
 def recipe_create(name: str, ingredients: tuple[str, ...], servings: float,
-                  instructions: str, as_json: bool):
+                  instructions: str, icon: str | None, no_icon: bool, as_json: bool):
     """Create a recipe. INGREDIENTS are log-style items ("100g greek yogurt",
     "1 tbsp honey"), resolved from your recent foods first, then search."""
     from loseit.client.api import LoseItAPI
     from loseit.client.parse import parse_item
 
+    if icon is not None and no_icon:
+        raise click.UsageError("Give --icon or --no-icon, not both")
     result = LoseItAPI().create_recipe(name, servings, instructions,
-                                       [parse_item(t) for t in ingredients])
+                                       [parse_item(t) for t in ingredients],
+                                       icon=icon, auto_icon=not no_icon)
 
     def human(r):
         d = r["created"]
@@ -668,6 +701,64 @@ def recipe_create(name: str, ingredients: tuple[str, ...], servings: float,
                    f"{d['calories_per_serving']:g} cal/serving ({d['recipe_id'][:8]})")
         for i in d["ingredients"]:
             click.echo(f"  {i['amount']:g} {i['unit']} {i['name']} — {i['calories']:g} cal")
+        _human_icon(r.get("icon"))
+    emit(result, as_json, human)
+
+
+def _human_icon(info: dict | None) -> None:
+    if not info:
+        return
+    if info.get("icon"):
+        how = {"explicit": "as given",
+               "auto": f"auto-picked, {info['confidence']:.0%} confidence"}.get(
+                   info.get("source"), info.get("source", ""))
+        click.echo(f"  icon: {info['icon']} ({how})")
+    elif info.get("source") == "auto":
+        hint = (f"; closest vocabulary match: {info['suggested']}"
+                if info.get("suggested") else "")
+        click.echo("  icon: none — no confident auto-pick for the name "
+                   f"(set one with 'loseit recipe-icon'){hint}")
+
+
+@main.command("recipe-icon")
+@click.argument("ref")
+@click.argument("icon", required=False)
+@click.option("--all", "all_versions", is_flag=True,
+              help="Also resolve names that only match superseded/retired versions")
+@json_option
+@cli_error_handler
+def recipe_icon(ref: str, icon: str | None, all_versions: bool, as_json: bool):
+    """Set a recipe's icon (its category, shown in the app's lists and log).
+
+    REF resolves like `recipe`. With ICON, it must be in the vocabulary
+    (see `loseit icons`). Without ICON, an icon is auto-picked from the
+    recipe's name using database foods with similar names, and the pick is
+    shown before it is applied.
+    """
+    from loseit.client.api import LoseItAPI
+
+    api = LoseItAPI()
+    pick = None
+    if icon is None:
+        info = api.get_recipe(ref, all_versions=all_versions)
+        pick = api.pick_icon(info["name"])
+        if pick is None:
+            fail(f"No confident icon pick for {info['name']!r}; "
+                 "give one explicitly (see 'loseit icons')", EXIT_ERROR, "no_pick", as_json)
+        icon = pick["icon"]
+        if not json_mode(as_json):
+            evidence = "; ".join(f"{e['name']} → {e['category']}" for e in pick["evidence"])
+            click.echo(f"Auto-picked {icon!r} for {info['name']!r} "
+                       f"({pick['confidence']:.0%} confidence)"
+                       + (f": {evidence}" if evidence else " (vocabulary match)"))
+    result = api.set_recipe_icon(ref, icon, all_versions=all_versions)
+    if pick is not None:
+        result["pick"] = pick
+
+    def human(r):
+        click.echo(f"✓ {r['name']}: icon {r['icon']!r} "
+                   f"(was {r['previous_icon']!r})" if r["previous_icon"] else
+                   f"✓ {r['name']}: icon {r['icon']!r}")
     emit(result, as_json, human)
 
 
