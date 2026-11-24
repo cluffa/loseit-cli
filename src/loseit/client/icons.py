@@ -88,8 +88,11 @@ def pick_icon(name: str, search_fn, vocabulary=None) -> dict | None:
     (LoseItAPI.search_foods) finds real foods named like `name`; each hit
     votes for its own category with the Jaccard similarity of the hit's name
     tokens to the target's, and a category's evidence is the sum of its
-    three best votes. Secondary signal: how much of the icon's own tokens
-    appear in the name (a boost, and a fallback when search finds nothing).
+    three best votes. The same food listed by many users (identical names
+    under one category) votes only once — duplicates are one food's
+    evidence, not several. Secondary signal: how much of the icon's own
+    tokens appear in the name (a boost, and a fallback when search finds
+    nothing).
     Returns {"icon", "confidence", "evidence", "score"} where evidence lists
     the winning category's best hits as {"name", "category", "score"}.
     """
@@ -103,20 +106,23 @@ def pick_icon(name: str, search_fn, vocabulary=None) -> dict | None:
         hits = search_fn(name, limit=25, details=False) or []
     except Exception:
         hits = []
-    votes: dict[str, list[tuple[float, str]]] = {}
+    votes: dict[str, dict[str, tuple[float, str]]] = {}
     for hit in hits:
         category = hit.get("category") or ""
         if category not in vocab_set or category == DEFAULT_ICON:
             continue
         sim = _jaccard(target, name_tokens(hit.get("name", "")))
         if sim > 0:
-            votes.setdefault(category, []).append((sim, hit.get("name", "")))
+            per_name = votes.setdefault(category, {})
+            key = (hit.get("name") or "").strip().lower()
+            if sim > per_name.get(key, (0.0, ""))[0]:
+                per_name[key] = (sim, hit.get("name", ""))
 
     scored = []
     for icon in vocab:
         if icon == DEFAULT_ICON:
             continue
-        icon_votes = sorted(votes.get(icon, []), reverse=True)
+        icon_votes = sorted(votes.get(icon, {}).values(), reverse=True)
         evidence = sum(sim for sim, _ in icon_votes[:3])
         tokens = icon_tokens(icon)
         overlap = len(tokens & target) / len(tokens) if tokens else 0.0

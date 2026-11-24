@@ -78,6 +78,18 @@ class TestPick:
         assert pick["icon"] == "FrostingChocolate"
         assert pick["evidence"][0]["name"] == "Frosting, Chocolate"
 
+    def test_duplicate_listings_vote_once(self):
+        # the same food listed by several users is one piece of evidence:
+        # three identical listings must not outvote one exact match
+        hits = [
+            {"name": "Chocolate Yogurt Frosting", "category": "FrostingChocolate"},
+            {"name": "Yogurt Frosting", "category": "FrostingYellow"},
+            {"name": "Yogurt Frosting", "category": "FrostingYellow"},
+            {"name": "Yogurt Frosting", "category": "FrostingYellow"},
+        ]
+        pick = pick_icon("Chocolate Yogurt Frosting", search_from(hits), VOCAB)
+        assert pick["icon"] == "FrostingChocolate"
+
     def test_weak_evidence_no_pick(self):
         hits = [{"name": "Beef Stew", "category": "Stew"}]
         assert pick_icon("Mystery Dish", search_from(hits), VOCAB) is None
