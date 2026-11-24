@@ -371,6 +371,40 @@ class TestAgentFlow:
         with pytest.raises(ValueError, match="at ~500 cal"):
             api.resolve_item(parse_item("1 can carrots ~500cal"))
 
+    def test_broken_serving_data_is_a_clean_value_error(self, api):
+        # Issue #11: a food whose serving container is None (or empty) used
+        # to crash _serving_for with AttributeError / RuntimeError.
+        food_id = "aa" * 16
+        food = make_food(api, food_id, "Broken Burrito", 310.0)
+        food.fields[2] = None
+        with pytest.raises(ValueError, match="has no serving sizes"):
+            api._serving_for(food, None, None, 1)
+        with pytest.raises(ValueError, match="has no serving sizes"):
+            api.plan_items([parse_item(food_id)], "lunch", DAY)
+        info = summarize_food(food)
+        assert info["servings"] == [] and info["nutrients_per_serving"] == {}
+        food.fields[2] = copy.deepcopy(decode("getFood_response_01.txt")).fields[2]
+        food.fields[2].fields[0] = []
+        with pytest.raises(ValueError, match="has no serving sizes"):
+            api._serving_for(food, None, None, 1)
+
+    def test_broken_candidate_is_skipped_not_a_crash(self, api):
+        hits = rank_search_results("carrots", api.search_foods("carrots", limit=15, details=False))
+        for i, h in enumerate(hits[:8]):
+            food = make_food(api, h["food_id"], h["name"], 50.0)
+            if i == 0:
+                food.fields[2] = None   # the top hit is the broken one
+        candidates = [{"food_id": hits[0]["food_id"], "source": "search", "name": hits[0]["name"],
+                       "brand": "", "amount": 1, "unit": None, "calories": None},
+                      {"food_id": hits[1]["food_id"], "source": "search", "name": hits[1]["name"],
+                       "brand": "", "amount": 1, "unit": None, "calories": None}]
+        api._estimate_calories(candidates)
+        assert candidates[0]["fits"] is False
+        assert candidates[1]["fits"] is True
+        # and full resolution does not crash on the broken candidate
+        choice = api.resolve_item(parse_item("carrots medium"))
+        assert choice["food_id"] and choice["calories"] == 50.0
+
     def test_unmet_hint_searches_other_spelling(self, api, monkeypatch):
         ids = {"peanutbutter cookies": ["aa" * 16], "peanut butter cookies": ["bb" * 16]}
         names = {"aa" * 16: ("PEANUTbutter Cookies", 120.0), "bb" * 16: ("Peanut Butter Cookies", 160.0)}
