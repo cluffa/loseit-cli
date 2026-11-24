@@ -318,9 +318,11 @@ def summarize_recipe(recipe: GObject, ingredients: bool = True) -> dict:
 
     Field positions (verified against live data, 2026-11):
       Recipe: [0] ActiveFood, [4] servings the recipe makes (counted in the
-              [9] FoodMeasure), [6] RecipeIngredient[] array, [8] instructions,
-              [9] serving measure, [10] serving size amount, [11] serving size
-              measure, [13] created ms, [14] recipe key (== the food key)
+              [9] FoodMeasure), [5] the icon (a second copy of the category;
+              see the "icon" output key), [6] RecipeIngredient[] array,
+              [8] instructions, [9] serving measure, [10] serving size amount,
+              [11] serving size measure, [13] created ms, [14] recipe key
+              (== the food key)
       ActiveFood: [1] FoodIdentifier ([1] category "Recipe", [3] name,
                   [4] brand, [9] food key), [2] FoodServing whose FoodNutrients
                   are the WHOLE recipe's totals (base = logged = 1), so
@@ -340,11 +342,19 @@ def summarize_recipe(recipe: GObject, ingredients: bool = True) -> dict:
     totals = entry_nutrients(active.fields[2])
     per_serving = {o: v / servings for o, v in totals.items()}
     created_ms = recipe.fields[13]
+    # The icon is the category, stored twice: the identifier's [1] and the
+    # Recipe's own [5]. The app reads [5] in lists/log views and the
+    # identifier in the recipe view, so either one set means an icon; the
+    # generic "Recipe" category and an empty [5] mean no icon.
+    icon = recipe.fields[5] if len(recipe.fields) > 5 else None
+    if not icon:
+        icon = ident.fields[1] if ident.fields[1] and ident.fields[1] != "Recipe" else ""
     out = {
         "recipe_id": key_to_hex(recipe.fields[14]),
         "food_id": key_to_hex(ident.fields[9]),
         "name": ident.fields[3],
         "brand": ident.fields[4] or "",
+        "icon": icon or "",
         "current": bool(active.fields[6]),
         "created": (datetime.fromtimestamp(created_ms / 1000, timezone.utc).date().isoformat()
                     if created_ms else None),
@@ -718,6 +728,16 @@ class LoseItAPI:
         recipes = self._recipes_raw()
         if _HEX_PREFIX.match(ref.lower()):
             matches = [r for r in recipes if key_to_hex(r.fields[14]).startswith(ref.lower())]
+            if len(matches) > 1:
+                # Versions written by an edit can share the recipe key (the
+                # app assigns fresh keys, a saveRecipe edit keeps it): the
+                # current version wins, and among current versions sharing
+                # one key the newest is the recipe.
+                current = [r for r in matches if r.fields[0].fields[6]]
+                if current:
+                    matches = current
+                if len(matches) > 1 and len({key_to_hex(r.fields[14]) for r in matches}) == 1:
+                    matches = matches[-1:]
         else:
             def scored(pool):
                 return [(_match_score(normalize_words(ref),
@@ -761,8 +781,54 @@ class LoseItAPI:
         self.call("removeRecipe", self.token(), array)
         return {"deleted": deleted}
 
+    def pick_icon(self, name: str) -> dict | None:
+        """Auto-pick an icon for a food/recipe name (see client.icons)."""
+        from .icons import pick_icon as _pick_icon
+        return _pick_icon(name, self.search_foods)
+
+    def set_recipe_icon(self, ref: str, icon: str, all_versions: bool = False) -> dict:
+        """Set a recipe's icon, writing BOTH category slots: the
+        FoodIdentifier's category (what the recipe view reads) and the
+        Recipe's own [5] (what list/log views read) — either one alone
+        leaves the other surface showing the default icon. Saves like any
+        recipe edit (a new current version) and verifies by re-fetching.
+        `icon` must be in the known vocabulary (see `loseit icons`)."""
+        from .icons import filter_icons, icon_vocabulary
+        if icon not in icon_vocabulary():
+            close = filter_icons(icon)
+            raise ValueError(
+                f"Unknown icon {icon!r}" +
+                (f"; close matches: {', '.join(close[:8])}" if close else "") +
+                " — see 'loseit icons' for the vocabulary")
+        recipe = self._resolve_recipe(ref, all_versions)
+        before = summarize_recipe(recipe, ingredients=False)
+        edited = copy.deepcopy(recipe)
+        edited.fields[0].fields[1].fields[1] = icon
+        while len(edited.fields) <= 5:
+            edited.fields.append(None)
+        edited.fields[5] = icon
+        self.call("saveRecipe", self.token(), edited)
+        key_hex = key_to_hex(recipe.fields[14])
+        versions = [r for r in self._recipes_raw() if key_to_hex(r.fields[14]) == key_hex]
+        if not versions:
+            versions = [r for r in self._recipes_raw()
+                        if r.fields[0].fields[1].fields[3] == before["name"]]
+        current = [r for r in versions if r.fields[0].fields[6]]
+        stored = (current or versions)[-1] if versions else None
+        if stored is None:
+            raise LoseItError("saveRecipe was accepted but the recipe isn't listed anymore")
+        ident_category = stored.fields[0].fields[1].fields[1]
+        recipe_icon = stored.fields[5] if len(stored.fields) > 5 else None
+        if ident_category != icon or recipe_icon != icon:
+            raise LoseItError(f"Icon did not persist (identifier category "
+                              f"{ident_category!r}, recipe field {recipe_icon!r})")
+        return {"recipe_id": key_hex, "name": before["name"], "icon": icon,
+                "identifier_category": ident_category, "recipe_icon": recipe_icon,
+                "previous_icon": before["icon"]}
+
     def create_recipe(self, name: str, servings: float, instructions: str,
-                      items: list[Item]) -> dict:
+                      items: list[Item], icon: str | None = None,
+                      auto_icon: bool = True) -> dict:
         """Create a recipe with saveRecipe.
 
         The Recipe is modelled on an existing one (the server rejects null
@@ -774,6 +840,12 @@ class LoseItAPI:
         flagged current (ActiveFood [6]/[7] set explicitly — a template may
         be a superseded version with them cleared).
         Verified live 2026-11 (create + delete round-trip).
+
+        Icon: with `icon`, that icon is set after creation; otherwise with
+        `auto_icon` (the default) the name's auto-pick is set when the
+        picker finds one. Either way the result's "icon" entry says what
+        happened. The icon write is a second saveRecipe (see
+        set_recipe_icon), so a created recipe with an icon has two versions.
         """
         if servings <= 0:
             raise ValueError("Servings must be positive")
@@ -815,7 +887,33 @@ class LoseItAPI:
             if not named:
                 raise LoseItError("saveRecipe was accepted but the new recipe isn't listed")
             created = named[-1:]
-        return {"created": summarize_recipe(created[0])}
+        result = {"created": summarize_recipe(created[0])}
+        # Icon: explicit wins; otherwise auto-pick from the name when the
+        # picker has real evidence (a miss just leaves the default icon).
+        if icon is not None:
+            self.set_recipe_icon(result["created"]["recipe_id"], icon)
+            result["icon"] = {"icon": icon, "source": "explicit"}
+        elif auto_icon:
+            pick = self.pick_icon(name)
+            if pick is not None and pick["evidence"]:
+                self.set_recipe_icon(result["created"]["recipe_id"], pick["icon"])
+                result["icon"] = {"icon": pick["icon"], "source": "auto",
+                                  "confidence": pick["confidence"],
+                                  "evidence": pick["evidence"]}
+            elif pick is not None:
+                # A vocabulary-only match (no database foods backing it) is
+                # a suggestion, not enough to write unattended.
+                result["icon"] = {"icon": None, "source": "auto",
+                                  "suggested": pick["icon"],
+                                  "reason": "vocabulary-only match, not applied"}
+            else:
+                result["icon"] = {"icon": None, "source": "auto",
+                                  "reason": "no confident pick for the name"}
+        else:
+            result["icon"] = {"icon": None, "source": "skipped"}
+        if result["icon"]["icon"]:
+            result["created"] = self.get_recipe(result["created"]["recipe_id"])
+        return result
 
     def _new_ingredient(self, template: GObject | None, food: GObject, size: GObject,
                         recipe_key: GObject, now_ms: int) -> GObject:
@@ -864,6 +962,8 @@ class LoseItAPI:
             recipe = copy.deepcopy(template)
             active, ident = recipe.fields[0], recipe.fields[0].fields[1]
             ident.fields[3] = name
+            ident.fields[1] = "Recipe"      # a new recipe starts with the default icon,
+            recipe.fields[5] = None         # not the template's (both category slots)
             ident.fields[8] = now_ms
             ident.fields[9] = recipe_key
             active.fields[6] = active.fields[7] = True   # a new recipe is the current version
