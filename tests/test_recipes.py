@@ -105,7 +105,13 @@ class FakeRecipes:
         if method == "getFood":
             return self.foods.get(key_to_hex(params[1]))
         if method == "saveRecipe":
-            self.recipes.append(params[1])
+            saved = params[1]
+            # like the server: saving a version supersedes the others with
+            # the same key (their current flags clear)
+            for r in self.recipes:
+                if key_to_hex(r.fields[14]) == key_to_hex(saved.fields[14]):
+                    r.fields[0].fields[6] = r.fields[0].fields[7] = False
+            self.recipes.append(saved)
             return box(1, self.api.sig("java.lang.Integer"))
         if method == "removeRecipe":
             doomed = {id(r) for r in params[1].fields[0]}
@@ -240,7 +246,10 @@ class TestCreateDelete:
                                           "amount": item.amount, "unit": item.unit})
         out = api.create_recipe("New Stew", 2.0, "Simmer.", [parse_item("100 grams greek yogurt"),
                                                              parse_item("1 tbsp honey")])
-        assert api.fake.methods() == ["getRecipes", "getFood", "getFood", "saveRecipe", "getRecipes"]
+        # the trailing searchFoods is the icon auto-pick (the fake rejects
+        # it; the picker treats that as no evidence and leaves the default)
+        assert api.fake.methods() == ["getRecipes", "getFood", "getFood", "saveRecipe",
+                                      "getRecipes", "searchFoods"]
         saved = next(p for m, p in api.fake.calls if m == "saveRecipe")[1]
         ident = saved.fields[0].fields[1]
         assert ident.fields[3] == "New Stew" and ident.fields[1] == "Recipe"
@@ -300,6 +309,85 @@ class TestCreateDelete:
         assert [r["name"] for r in api.list_recipes()] == ["Test Soup", "Test Soup"]
 
 
+class TestRecipeIcon:
+    """The icon lives in two category slots (identifier [1] and Recipe [5]);
+    both must be written or some app surfaces keep the default icon."""
+
+    def _resolve_yogurt(self, api, monkeypatch):
+        monkeypatch.setattr(api, "resolve_item",
+                            lambda item: {"food_id": YOGURT, "source": "search",
+                                          "name": None, "alternatives": [],
+                                          "amount": item.amount, "unit": item.unit})
+
+    def test_summarize_icon_defaults_empty(self, api):
+        recipe = api.fake.recipes[0]
+        assert summarize_recipe(recipe)["icon"] == ""
+        recipe.fields[5] = "Cake"                       # only the recipe slot set
+        assert summarize_recipe(recipe)["icon"] == "Cake"
+        recipe.fields[5] = None
+        recipe.fields[0].fields[1].fields[1] = "Cake"    # only the identifier set
+        assert summarize_recipe(recipe)["icon"] == "Cake"
+
+    def test_set_icon_writes_both_fields(self, api):
+        out = api.set_recipe_icon("plain rice", "Cake")
+        assert out["icon"] == "Cake" and out["previous_icon"] == ""
+        assert out["identifier_category"] == "Cake" and out["recipe_icon"] == "Cake"
+        saved = next(p[1] for m, p in api.fake.calls if m == "saveRecipe")
+        assert saved.fields[0].fields[1].fields[1] == "Cake"
+        assert saved.fields[5] == "Cake"
+        # the stored current version now reports the icon
+        assert api.get_recipe("plain rice")["icon"] == "Cake"
+        assert api.list_recipes("plain rice")[0]["icon"] == "Cake"
+
+    def test_set_icon_unknown_rejected(self, api):
+        with pytest.raises(ValueError, match="Unknown icon"):
+            api.set_recipe_icon("plain rice", "NotAnIcon")
+        with pytest.raises(ValueError, match="close matches"):
+            api.set_recipe_icon("plain rice", "FrostingChocolat")
+        assert "saveRecipe" not in api.fake.methods()
+
+    def test_create_with_explicit_icon(self, api, monkeypatch):
+        self._resolve_yogurt(api, monkeypatch)
+        out = api.create_recipe("Icon Stew", 1.0, "", [parse_item("100 grams greek yogurt")],
+                                icon="Cake")
+        assert out["icon"] == {"icon": "Cake", "source": "explicit"}
+        assert out["created"]["icon"] == "Cake"
+        assert api.fake.methods().count("saveRecipe") == 2   # create + icon write
+
+    def test_create_auto_icon_from_database_pick(self, api, monkeypatch):
+        self._resolve_yogurt(api, monkeypatch)
+        monkeypatch.setattr(api, "pick_icon", lambda name: {
+            "icon": "Cake", "confidence": 0.8, "score": 2.0,
+            "evidence": [{"name": "Chocolate Cake", "category": "Cake", "score": 0.9}]})
+        out = api.create_recipe("Auto Cake", 1.0, "", [parse_item("100 grams greek yogurt")])
+        assert out["icon"]["icon"] == "Cake" and out["icon"]["source"] == "auto"
+        assert out["created"]["icon"] == "Cake"
+
+    def test_create_auto_icon_vocabulary_only_not_applied(self, api, monkeypatch):
+        self._resolve_yogurt(api, monkeypatch)
+        monkeypatch.setattr(api, "pick_icon", lambda name: {
+            "icon": "Cake", "confidence": 0.4, "score": 0.0, "evidence": []})
+        out = api.create_recipe("Vocab Cake", 1.0, "", [parse_item("100 grams greek yogurt")])
+        assert out["icon"]["icon"] is None and out["icon"]["suggested"] == "Cake"
+        assert out["created"]["icon"] == ""
+        assert api.fake.methods().count("saveRecipe") == 1   # just the create
+
+    def test_create_auto_icon_no_pick(self, api, monkeypatch):
+        self._resolve_yogurt(api, monkeypatch)
+        monkeypatch.setattr(api, "pick_icon", lambda name: None)
+        out = api.create_recipe("Plain Stew", 1.0, "", [parse_item("100 grams greek yogurt")])
+        assert out["icon"]["icon"] is None
+        assert api.fake.methods().count("saveRecipe") == 1
+
+    def test_create_no_icon_skips_picker(self, api, monkeypatch):
+        self._resolve_yogurt(api, monkeypatch)
+        monkeypatch.setattr(api, "pick_icon",
+                            lambda name: pytest.fail("picker must not run"))
+        out = api.create_recipe("Skip Stew", 1.0, "", [parse_item("100 grams greek yogurt")],
+                                auto_icon=False)
+        assert out["icon"] == {"icon": None, "source": "skipped"}
+
+
 class TestRecipeFood:
     def test_recipe_food_sizes_like_a_food(self, api):
         food = api._food("aa" * 16)     # getFood returns None for recipes
@@ -348,10 +436,19 @@ class StubAPI:
                 "current": True, "created": "2023-11-14",
                 "instructions": "Boil.", "ingredients": []}
 
-    def create_recipe(self, name, servings, instructions, items):
-        self.created = (name, servings, instructions, items)
+    def create_recipe(self, name, servings, instructions, items, icon=None, auto_icon=True):
+        self.created = {"name": name, "servings": servings, "instructions": instructions,
+                        "items": items, "icon": icon, "auto_icon": auto_icon}
+        if icon is not None:
+            icon_info = {"icon": icon, "source": "explicit"}
+        elif auto_icon:
+            icon_info = {"icon": "Cake", "source": "auto", "confidence": 0.6}
+        else:
+            icon_info = {"icon": None, "source": "skipped"}
         return {"created": {"name": name, "servings": servings, "serving_unit": "Serving",
-                            "calories_per_serving": 10.0, "recipe_id": "cd" * 16, "ingredients": []}}
+                            "calories_per_serving": 10.0, "recipe_id": "cd" * 16,
+                            "ingredients": []},
+                "icon": icon_info}
 
     def delete_recipe(self, ref, all_versions=False):
         self.deleted = ref
@@ -396,10 +493,27 @@ class TestCLI:
         result = self.invoke(["recipe-create", "Stew", "--servings", "3",
                               "--instructions", "Simmer.", "100g yogurt", "1 tbsp honey"])
         assert result.exit_code == 0
-        name, servings, instructions, items = StubAPI.instances[-1].created
-        assert (name, servings, instructions) == ("Stew", 3.0, "Simmer.")
-        assert [(i.amount, i.unit, i.query) for i in items] == [
+        created = StubAPI.instances[-1].created
+        assert (created["name"], created["servings"], created["instructions"]) == (
+            "Stew", 3.0, "Simmer.")
+        assert created["icon"] is None and created["auto_icon"] is True
+        assert [(i.amount, i.unit, i.query) for i in created["items"]] == [
             (100.0, "gram", "yogurt"), (1.0, "tablespoon", "honey")]
+
+    def test_recipe_create_icon_flags(self):
+        result = self.invoke(["recipe-create", "Stew", "--icon", "Cake", "100g yogurt"])
+        assert result.exit_code == 0
+        created = StubAPI.instances[-1].created
+        assert created["icon"] == "Cake" and created["auto_icon"] is True
+
+        result = self.invoke(["recipe-create", "Stew", "--no-icon", "100g yogurt"])
+        assert result.exit_code == 0
+        created = StubAPI.instances[-1].created
+        assert created["icon"] is None and created["auto_icon"] is False
+
+        result = self.invoke(["recipe-create", "Stew", "--icon", "Cake",
+                              "--no-icon", "100g yogurt"])
+        assert result.exit_code == 2
 
     def test_recipe_delete(self):
         result = self.invoke(["recipe-delete", "soup"])
