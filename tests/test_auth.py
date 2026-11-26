@@ -216,6 +216,29 @@ class TestCookieAndPasswordLogin:
         assert saved.refresh_token == ""
         assert saved.expires_at() is not None
 
+    def test_password_login_survives_shell_page(self, isolated_session):
+        """Regression (2026-11-26): /index.jsp now serves an app shell with no
+        embedded user data; the login body's user_id/username must carry the
+        session instead of failing with 'Logged-in page not recognized'."""
+        from loseit.client.session import SessionStore
+
+        fx = json.loads((FIXTURES / "account_login_success.json").read_text())
+        token = make_jwt(datetime.now(timezone.utc) + timedelta(days=14))
+
+        def handler(request):
+            if request.url.host == "api.loseit.com":
+                headers = [("set-cookie", c.replace("{TOKEN}", token)) for c in fx["set_cookie"]]
+                return httpx.Response(fx["status"], json=fx["body"], headers=headers)
+            if request.url.host == "www.loseit.com":
+                return httpx.Response(200, text="<html><title>Lose It!</title>app shell</html>")
+            return httpx.Response(404)
+
+        session = manager_with(handler).login_with_password("user@example.com", "pw")
+        assert (session.user_id, session.username) == (fx["body"]["user_id"], fx["body"]["username"])
+        saved = SessionStore.load()
+        assert saved.cookies["liauth"] == token
+        assert saved.expires_at() is not None
+
     def test_marketing_page_is_not_a_login(self, isolated_session):
         """The cached "/" page has no user data; validation must not rely on it."""
         assert auth_mod.WEB_APP_URL.endswith("/index.jsp")

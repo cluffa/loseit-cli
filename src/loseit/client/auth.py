@@ -291,11 +291,23 @@ class AuthManager:
         cookies = _token_response_cookies(resp)
         if not any(c in cookies for c in AUTH_COOKIES):
             raise RuntimeError("LoseIt accepted the login but returned no session token.")
+        # The login response itself names the account ({"user_id", "username"}).
+        # Since a 2026-11 redeploy, /index.jsp serves an app shell with no
+        # embedded user data, so _save_cookie_session falls back to these.
+        known_user = None
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict) and body.get("user_id") and body.get("username"):
+            known_user = (int(body["user_id"]), str(body["username"]))
         return self._save_cookie_session(cookies, source="password login",
-                                         refresh_token=_response_refresh_token(resp))
+                                         refresh_token=_response_refresh_token(resp),
+                                         known_user=known_user)
 
     def _save_cookie_session(self, cookies: dict[str, str], source: str,
-                             refresh_token: str = "") -> Session:
+                             refresh_token: str = "",
+                             known_user: tuple[int, str] | None = None) -> Session:
         """Validate cookies against www.loseit.com, then save them as the session."""
         cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
         resp = self._client.get(WEB_APP_URL, headers={"Cookie": cookie_header},
@@ -307,7 +319,12 @@ class AuthManager:
         try:
             user_id, username = parse_embedded_user(resp.text)
         except ValueError as e:
-            raise RuntimeError(f"Logged-in page not recognized: {e}") from e
+            if known_user is None:
+                raise RuntimeError(f"Logged-in page not recognized: {e}") from e
+            # The app shell page carries no embedded user data (2026-11
+            # redeploy); the account/login response already identified the
+            # account these cookies were issued for, so trust that instead.
+            user_id, username = known_user
 
         # Keep cookies the page itself set (e.g. a fresh JSESSIONID)
         cookies = {**cookies, **{k: v for k, v in resp.cookies.items() if v}}
